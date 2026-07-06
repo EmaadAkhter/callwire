@@ -123,6 +123,8 @@ func dispatch(conn net.Conn, msg wireMessage) {
 	}()
 
 	if results == nil {
+		payload, _ := encodeResponse(msg.ID, nil)
+		writeFrame(conn, payload)
 		return
 	}
 
