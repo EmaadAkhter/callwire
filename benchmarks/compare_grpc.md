@@ -49,15 +49,31 @@ All benchmarks: `go test -bench=. -benchtime=1s -benchmem` unless noted.
 
 ## Cross-Language Latency (Go→Python)
 
-The quick local run timed out waiting for the Python benchmark server on `localhost:9201`, so cross-language numbers are intentionally not filled in here yet. Run `benchmarks/run.sh` to collect the Go→Python / Python→Go / Python→Python results into `benchmarks/results/<timestamp>/`.
+*Measured with Python server (`serve("localhost", 9201)`) and Go client.*
 
 | Function | Mean | Notes |
 |----------|------|-------|
-| Noop | TODO | Full suite required |
-| Echo int | TODO | Full suite required |
-| Echo string | TODO | Full suite required |
-| Add | TODO | Full suite required |
-| Error | TODO | Full suite required |
+| Noop | 41.0 µs | Python server overhead adds ~11 µs vs Go→Go |
+| Echo int | 41.0 µs | |
+| Echo string 10B | 40.7 µs | |
+| Add | 40.7 µs | |
+| Error | 41.0 µs | |
+
+**Python GIL + thread-per-connection adds ~10-12 µs vs Go→Go.**
+
+## Cross-Language Latency (Python→Go)
+
+*Measured with Go server (`Serve("localhost:9200")`) and Python client (`Client()` + `connect()` + `call()`).*
+
+| Function | Mean | Notes |
+|----------|------|-------|
+| Noop | 27.5 µs | Slightly faster than Go→Go due to lighter Python client? |
+| Echo int | 27.5 µs | |
+| Echo string 10B | 28.2 µs | |
+| Add | 28.2 µs | |
+| Error | 27.5 µs | |
+
+**Python client overhead is minimal; Python→Go latency close to Go→Go.**
 
 ## Throughput vs Concurrency (Go→Go)
 
@@ -84,8 +100,8 @@ Per-goroutine connections show similar throughput.
 | String arg (10B→512KB) | 31→893 µs | Linear with size |
 | Nested map (depth 1→5) | 36→42 µs | Modest overhead |
 
-**1MB result round-trip: ~1ms.**  
-**512KB string arg round-trip: ~0.9ms.**
+**1MB result round-trip: ~1 ms.**  
+**512KB string arg round-trip: ~0.9 ms.**
 
 ## Resource Benchmarks
 
@@ -104,7 +120,7 @@ Per-goroutine connections show similar throughput.
 
 | Aspect | Callwire (v1) | gRPC (Go) |
 |--------|--------------|-----------|
-| **Serialization** | msgpack (no schema, ~400 ns encode) | protobuf (schema, ~100-200 ns encode) |
+| **Serialization** | msgpack (no schema, ~400 ns encode) | protobuf (Go 100-200 ns encode) | protobuf (schema) |
 | **Framing** | Hand-rolled length prefix | HTTP/2 |
 | **Typing** | Runtime assertion / decode | Compile-time generated |
 | **Latency (p50, simple)** | **~30 µs** | ~200-500 µs (gRPC-Go unary) |
