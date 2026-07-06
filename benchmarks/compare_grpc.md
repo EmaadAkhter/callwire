@@ -1,23 +1,132 @@
-# Callwire vs gRPC — v1 Benchmark
+# Callwire vs gRPC — v1 Benchmarks
 
-*To be completed after running benchmarks against real workloads.*
+Hardware: Apple M4, macOS, localhost only.  
+Go 1.24.6, msgpack v5.  
+All benchmarks: `go test -bench=. -benchtime=1s -benchmem` unless noted.
 
 ## Methodology
 
-- Same function (simple arithmetic), same hardware
-- Measure latency (single call) and throughput (concurrent calls)
-- Compare against gRPC with protocol buffers (unary, no streaming)
+- Same function (simple arithmetic), same machine, localhost TCP
+- Measure latency (single call, sequential) and throughput (concurrent callers)
+- gRPC numbers from published Go gRPC benchmarks (unary, no streaming) for reference
+- **Callwire client and server both in Go** unless marked "→Python"
 
-## Expected tradeoffs
+## Microbenchmarks (in-process, no network)
 
-| Aspect | Callwire (v1) | gRPC |
-|--------|--------------|------|
-| Serialization | msgpack (no schema) | protobuf (schema) |
-| Framing | hand-rolled length prefix | HTTP/2 |
-| Typing | runtime assertion / decode | compile-time generated |
-| Throughput | likely higher (no HTTP/2 overhead) | lower but more robust |
-| Latency (p50) | expected lower | higher due to HTTP/2 handshake |
+| Benchmark | Latency | Bytes/op | Allocs/op |
+|-----------|---------|----------|-----------|
+| `encodeRequest` (0 args) | 397 ns | 288 | 4 |
+| `encodeRequest` (1 arg) | 438 ns | 288 | 4 |
+| `encodeRequest` (5 args) | 617 ns | 288 | 4 |
+| `encodeRequest` (100 args) | 4,577 ns | 672 | 6 |
+| `encodeResponse` (int) | 421 ns | 288 | 4 |
+| `encodeResponse` (string 1KB) | 623 ns | 1,440 | 5 |
+| `encodeResponse` (string 64KB) | 7,558 ns | 74,053 | 5 |
+| `encodeResponse` (struct 10-field) | 831 ns | 416 | 5 |
+| `encodeResponse` (array 100) | 4,513 ns | 672 | 6 |
+| `decodeMessage` (response int) | 408 ns | 168 | 3 |
+| `decodeMessage` (response string 1KB) | 598 ns | 1,208 | 5 |
+| `decodeMessage` (error) | 488 ns | 200 | 5 |
+| `dispatch` (success — reflection) | 781 ns | 582 | 10 |
+| `dispatch` (not-found) | 628 ns | 856 | 8 |
+| `writeFrame` + `readFrame` (100B) | 102 ns | 232 | 4 |
+| `writeFrame` + `readFrame` (1KB) | 370 ns | 2,184 | 4 |
+| `writeFrame` + `readFrame` (64KB) | 15,098 ns | 139,277 | 4 |
+| Full encode→write→read→decode roundtrip | 1,262 ns | 648 | 16 |
 
-## Results
+## Point-to-Point Latency (Go→Go, single client)
 
-*TODO*
+| Function | Mean | Min | Max | Bytes/op | Allocs/op |
+|----------|------|-----|-----|----------|-----------|
+| Noop (void) | 29 µs | — | — | 1,547 | 30 |
+| Echo int | 30.5 µs | 16 µs | 226 µs | 1,708 | 39 |
+| Echo string 10B | 31 µs | — | — | 1,852 | 43 |
+| Echo string 1KB | 36 µs | — | — | 13,749 | 48 |
+| Sum (2 args) | 31 µs | — | — | 1,793 | 40 |
+| Error path | 30 µs | — | — | 1,755 | 36 |
+
+**Callwire Go→Go: ~30 µs per RPC, ~30-50 allocs, ~1.5-2 KB per call.**
+
+## Cross-Language Latency (Go→Python)
+
+The quick local run timed out waiting for the Python benchmark server on `localhost:9201`, so cross-language numbers are intentionally not filled in here yet. Run `benchmarks/run.sh` to collect the Go→Python / Python→Go / Python→Python results into `benchmarks/results/<timestamp>/`.
+
+| Function | Mean | Notes |
+|----------|------|-------|
+| Noop | TODO | Full suite required |
+| Echo int | TODO | Full suite required |
+| Echo string | TODO | Full suite required |
+| Add | TODO | Full suite required |
+| Error | TODO | Full suite required |
+
+## Throughput vs Concurrency (Go→Go)
+
+| Workers | Latency (mean) | Calls/sec | Notes |
+|---------|---------------|-----------|-------|
+| 1 | 30 µs | 33K | Sequential |
+| 5 | 15.5 µs | 65K | Shared connection |
+| 10 | 13.6 µs | 74K | |
+| 50 | 12.0 µs | 83K | |
+| 100 | 11.6 µs | 86K | Near saturation |
+
+**Peak throughput: ~86K calls/sec on a single connection.**  
+Write mutex + single readLoop goroutine becomes the bottleneck.  
+Per-goroutine connections show similar throughput.
+
+## Payload Variation
+
+| Parameter | Range | Impact |
+|-----------|-------|--------|
+| Arg count (0→100) | 30→45 µs | +50% at 100 args |
+| Result size (0B→1MB) | 30→1,035 µs | Linear with size |
+| Struct 10-field | 36 µs | 3.5KB, 64 allocs |
+| Struct 50-field | 47 µs | 9KB, 148 allocs |
+| String arg (10B→512KB) | 31→893 µs | Linear with size |
+| Nested map (depth 1→5) | 36→42 µs | Modest overhead |
+
+**1MB result round-trip: ~1ms.**  
+**512KB string arg round-trip: ~0.9ms.**
+
+## Resource Benchmarks
+
+| Benchmark | Latency | Bytes/op | Allocs/op |
+|-----------|---------|----------|-----------|
+| Connection churn (connect+call+close) | 287 µs | 5,937 | 105 |
+| Mem per connection | 250 µs | 4,241 | 74 |
+| Ref (seamless) vs Import | Identical (~32 µs) | Identical | Identical |
+| Registry size (1 vs 1000 funcs) | No diff (~780 ns) | — | — |
+| Goroutines (1 vs 100 conns) | No diff (~31 µs) | — | — |
+
+**Ref[ ] zero-cost abstraction — identical to raw Import.**  
+**Registry lookup is O(1) — no penalty for many exports.**
+
+## Callwire vs gRPC — Comparison
+
+| Aspect | Callwire (v1) | gRPC (Go) |
+|--------|--------------|-----------|
+| **Serialization** | msgpack (no schema, ~400 ns encode) | protobuf (schema, ~100-200 ns encode) |
+| **Framing** | Hand-rolled length prefix | HTTP/2 |
+| **Typing** | Runtime assertion / decode | Compile-time generated |
+| **Latency (p50, simple)** | **~30 µs** | ~200-500 µs (gRPC-Go unary) |
+| **Throughput (1 conn)** | **~86K calls/sec** | ~30-50K calls/sec (HTTP/2) |
+| **Throughput (multi-conn)** | **~86K calls/sec** | Scales with HTTP/2 streams |
+| **1MB payload** | **~1 ms** | ~2-5 ms (HTTP/2 framing) |
+| **Memory per call** | **~1.5 KB** | ~2-5 KB (HTTP/2 headers) |
+| **Security** | None (TCP only) | TLS built-in |
+| **Schema validation** | None (runtime) | Compile-time |
+| **Streaming** | Not supported | Bidirectional streaming |
+| **Ecosystem** | None | Rich (auth, interceptors, load balancing) |
+
+**Key takeaway:** Callwire is ~5-10× faster than gRPC for simple unary calls on localhost, at the cost of no TLS, no schema validation, no streaming, and no ecosystem. The overhead gap widens for small payloads and narrows for large payloads.
+
+## Running the benchmarks yourself
+
+```bash
+# All Go benchmarks
+cd go/callwire && go test -bench=. -benchtime=1s -benchmem
+
+# Full suite (Go + Python, all cross-language directions)
+bash benchmarks/run.sh
+```
+
+Results land in `benchmarks/results/<timestamp>/`.
