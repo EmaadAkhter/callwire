@@ -1,0 +1,11 @@
+# Python
+python/.venv/
+__pycache__/
+*.pyc
+
+# Go
+go/callwire/all
+go/callwire/httpserver
+
+# OS
+.DS_Store
