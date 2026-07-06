@@ -206,11 +206,11 @@ func startBenchPythonServer(t testing.TB, port string, code string) {
 import sys
 sys.path.insert(0, %q)
 
-from callwire.server import export
+from callwire.server import export, serve
 %s
 
-import time; time.sleep(3600)
-`, filepath.Join(repoRoot, "python"), code)
+serve("localhost", %s)
+`, filepath.Join(repoRoot, "python"), code, port)
 
 	cmd := exec.Command(pyBin, "-c", code)
 	cmd.Stderr = os.Stderr
