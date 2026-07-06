@@ -66,10 +66,10 @@ callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
 Both sides are symmetric — add to either or both:
 
 ```
-Go client  →  Python server    (Connect + Ref  →  @export + auto-serve)
-Python client → Go server      (ref  →  Export + Serve)
-Python → Python                 (ref → @export on another Python process)
-Go → Go                         (Connect + Ref → Export + Serve on another Go process)
+Go client  →  Python server    (Ref  →  @export)       ← both seamless
+Python client → Go server      (ref  →  Export)        ← both seamless
+Python → Python                 (ref → @export)         ← seamless
+Go → Go                         (Ref → Export)          ← seamless
 ```
 
 Run the demo:
@@ -111,7 +111,7 @@ callwire/
 |---------|---------|--------|
 | `CALLWIRE_HOST` | `localhost` | Auto-start bind host / default client address |
 | `CALLWIRE_PORT` | `9090` | Auto-start bind port / default client address |
-| `CALLWIRE_AUTO` | `1` | Set to `0` to disable auto-start (Python only) |
+| `CALLWIRE_AUTO` | `1` | Set to `0` to disable auto-start |
 
 Python:
 
