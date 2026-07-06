@@ -3,19 +3,45 @@ package callwire
 import (
 	"log"
 	"net"
+	"os"
 	"reflect"
+	"strconv"
 	"sync"
 )
 
 var (
-	registry   = map[string]interface{}{}
-	registryMu sync.RWMutex
+	registry      = map[string]interface{}{}
+	registryMu    sync.RWMutex
+	autoServeOnce sync.Once
 )
 
 func Export(name string, fn interface{}) {
 	registryMu.Lock()
 	registry[name] = fn
 	registryMu.Unlock()
+	autoServeOnce.Do(autoServe)
+}
+
+func autoServe() {
+	if os.Getenv("CALLWIRE_AUTO") == "0" {
+		return
+	}
+	go func() {
+		addr := net.JoinHostPort(defaultHost, strconv.Itoa(defaultPort))
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Printf("callwire: auto-serve on %s failed: %v", addr, err)
+			return
+		}
+		log.Printf("callwire: auto-serving on %s", addr)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				continue
+			}
+			go handleConnection(conn)
+		}
+	}()
 }
 
 func Serve(addr string) error {

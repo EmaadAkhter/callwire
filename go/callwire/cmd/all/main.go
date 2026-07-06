@@ -22,15 +22,9 @@ func main() {
 		httpAddr = os.Args[2]
 	}
 
+	callwire.Configure("", 9098)
 	callwire.Export("double", func(x int) int { return x * 2 })
 	callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
-
-	go func() {
-		log.Printf("[Go] callwire on :9098")
-		if err := callwire.Serve(":9098"); err != nil {
-			log.Fatalf("[Go] serve: %v", err)
-		}
-	}()
 
 	goClient, err := callwire.Connect("localhost:9098")
 	if err != nil {

@@ -49,8 +49,17 @@ double := callwire.RefWithClient[int](client, "double")
 
 ```go
 callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
-callwire.Serve(":9098")
+// server auto-starts on localhost:9090 (CALLWIRE_HOST:CALLWIRE_PORT)
 ```
+
+For a different port:
+
+```go
+callwire.Configure("0.0.0.0", 9098)
+callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
+```
+
+`callwire.Serve(":9098")` is still available for explicit blocking servers.
 
 ## All 4 directions
 
