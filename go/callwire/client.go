@@ -2,6 +2,8 @@ package callwire
 
 import (
 	"net"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +16,55 @@ type Client struct {
 	pending   map[uint64]chan wireMessage
 	pendingMu sync.Mutex
 	nextID    uint64
+}
+
+var (
+	defaultClient   *Client
+	defaultMu       sync.Mutex
+	defaultHost     = envDefault("CALLWIRE_HOST", "localhost")
+	defaultPort     = envDefaultInt("CALLWIRE_PORT", 9090)
+)
+
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envDefaultInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func Configure(host string, port int) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultHost = host
+	defaultPort = port
+	if defaultClient != nil {
+		defaultClient.Close()
+		defaultClient = nil
+	}
+}
+
+func getDefaultClient() (*Client, error) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	if defaultClient != nil {
+		return defaultClient, nil
+	}
+	addr := net.JoinHostPort(defaultHost, strconv.Itoa(defaultPort))
+	c, err := Connect(addr)
+	if err != nil {
+		return nil, err
+	}
+	defaultClient = c
+	return defaultClient, nil
 }
 
 func Connect(addr string) (*Client, error) {
@@ -52,7 +103,18 @@ func (c *Client) readLoop() {
 	}
 }
 
-func Ref[Resp any](c *Client, funcName string) func(...interface{}) (Resp, error) {
+func Ref[Resp any](funcName string) func(...interface{}) (Resp, error) {
+	return func(args ...interface{}) (Resp, error) {
+		var zero Resp
+		c, err := getDefaultClient()
+		if err != nil {
+			return zero, err
+		}
+		return RefWithClient[Resp](c, funcName)(args...)
+	}
+}
+
+func RefWithClient[Resp any](c *Client, funcName string) func(...interface{}) (Resp, error) {
 	return func(args ...interface{}) (Resp, error) {
 		var zero Resp
 		cleanArgs := args

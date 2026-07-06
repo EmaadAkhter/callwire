@@ -26,10 +26,23 @@ Server auto-starts on the first `@export`. No `serve()` needed.
 ```go
 import "github.com/emaad/callwire"
 
-client, _ := callwire.Connect("localhost:9090")
-double := callwire.Ref[int](client, "double")
+double := callwire.Ref[int]("double")   // lazy default client to localhost:9090
 result, _ := double(21)
 fmt.Println(result) // 42
+```
+
+For a custom address:
+
+```go
+callwire.Configure("0.0.0.0", 9091)
+d := callwire.Ref[int]("double")
+```
+
+Or with an explicit client:
+
+```go
+client, _ := callwire.Connect("localhost:9090")
+double := callwire.RefWithClient[int](client, "double")
 ```
 
 ### Go server side
@@ -70,7 +83,7 @@ callwire/
 │   ├── codec.py                     # msgpack pack/unpack
 │   └── errors.py                    # allowlist-based error exposure
 ├── go/callwire/
-│   ├── client.go                    # Connect(), Import(), Ref[Resp]()
+│   ├── client.go                    # Connect(), Import(), Ref[Resp](), RefWithClient[Resp](), Configure()
 │   ├── server.go                    # Export(), Serve(), reflection dispatch
 │   ├── framing.go                   # io.ReadFull for partial-read safety
 │   ├── codec.go                     # msgpack encode/decode
@@ -87,18 +100,24 @@ callwire/
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CALLWIRE_HOST` | `localhost` | Auto-start bind host |
-| `CALLWIRE_PORT` | `9090` | Auto-start bind port |
-| `CALLWIRE_AUTO` | `1` | Set to `0` to disable auto-start |
+| `CALLWIRE_HOST` | `localhost` | Auto-start bind host / default client address |
+| `CALLWIRE_PORT` | `9090` | Auto-start bind port / default client address |
+| `CALLWIRE_AUTO` | `1` | Set to `0` to disable auto-start (Python only) |
 
-Or in code:
+Python:
 
 ```python
 from callwire import configure
 configure(host="0.0.0.0", port=9091)
 ```
 
-Must be called before any `@export`.
+Go:
+
+```go
+callwire.Configure("0.0.0.0", 9091)
+```
+
+Must be called before any `@export` / `Ref[ ]`.
 
 ## Development
 
