@@ -190,6 +190,54 @@ def slow_add(a, b):
 	t.Log("SUCCESS:", len(seen), "concurrent calls all returned correct results")
 }
 
+func TestGoToPythonCompositeArgs(t *testing.T) {
+	pyCode := `
+@export
+def infer_score(req, tensor):
+    total = 0.0
+    for v in tensor:
+        total += float(v)
+    return {
+        "name": req["name"],
+        "score": total * float(req["scale"]),
+        "count": len(tensor),
+    }
+`
+	startPythonServer(t, "9296", pyCode)
+
+	type inferRequest struct {
+		Name  string  `msgpack:"name"`
+		Scale float64 `msgpack:"scale"`
+	}
+
+	client, err := Connect("localhost:9296")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	req := inferRequest{Name: "demo", Scale: 0.5}
+	tensor := []float64{1, 2, 3, 4}
+	result, err := Import[map[string]interface{}](client, context.Background(), "infer_score", []interface{}{req, tensor})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	name, _ := result["name"].(string)
+	if name != "demo" {
+		t.Fatalf("expected name=demo, got %#v", result["name"])
+	}
+	count := int(toFloat64(result["count"]))
+	if count != 4 {
+		t.Fatalf("expected count=4, got %#v", result["count"])
+	}
+	score := toFloat64(result["score"])
+	if score != 5.0 {
+		t.Fatalf("expected score=5.0, got %#v", result["score"])
+	}
+	t.Log("SUCCESS: Go→Python composite args (struct + []float64) work")
+}
+
 // ── Go→Go integration ──────────────────────────────────────────────
 
 func TestGoToGoIntegration(t *testing.T) {
@@ -410,4 +458,35 @@ func searchString(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func toFloat64(v interface{}) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int:
+		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case uint:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	case uint64:
+		return float64(x)
+	default:
+		return 0
+	}
 }
