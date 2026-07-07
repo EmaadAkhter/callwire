@@ -99,11 +99,14 @@ def test_exported_error():
     assert msg == "bad val"
     print("[PASS] registered ValueError exposed")
 
+class _UnlistedError(Exception):
+    pass
+
 def test_internal_error():
-    exc_type, msg = exception_to_wire(FileNotFoundError("no file"))
+    exc_type, msg = exception_to_wire(_UnlistedError("no file"))
     assert exc_type == "InternalError"
     assert msg == "an internal error occurred"
-    print("[PASS] unregistered FileNotFoundError hidden as InternalError")
+    print("[PASS] unlisted exception hidden as InternalError")
 
 
 # ── Step 3: dispatch ───────────────────────────────────────────────

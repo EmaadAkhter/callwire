@@ -405,10 +405,10 @@ func BenchmarkLatencyGoToGo(b *testing.B) {
 		{"noop", func() { _, _ = Import[int](client, context.Background(), "noop", nil) }},
 		{"echo-int", func() { _, _ = Import[int](client, context.Background(), "echo", []interface{}{42}) }},
 		{"echo-string-10B", func() {
-			_, _ = Import[string](client, context.Background(), "echoStr", []interface{}{"hello world"})
+			_, _ = Import[string, string](client, "echoStr", []interface{}{"hello world"})
 		}},
 		{"echo-string-1KB", func() {
-			_, _ = Import[string](client, context.Background(), "echoStr", []interface{}{strings.Repeat("x", 1024)})
+			_, _ = Import[string, string](client, "echoStr", []interface{}{strings.Repeat("x", 1024)})
 		}},
 		{"add", func() { _, _ = Import[int](client, context.Background(), "add", []interface{}{10, 20}) }},
 		{"error-path", func() { _, _ = Import[int](client, context.Background(), "errFn", nil) }},
@@ -459,7 +459,7 @@ def raise_error():
 		{"noop", func() { _, _ = Import[int](client, context.Background(), "noop", nil) }},
 		{"echo-int", func() { _, _ = Import[int](client, context.Background(), "echo", []interface{}{42}) }},
 		{"echo-string", func() {
-			_, _ = Import[string](client, context.Background(), "echo_str", []interface{}{"hello"})
+			_, _ = Import[string, string](client, "echo_str", []interface{}{"hello"})
 		}},
 		{"add", func() { _, _ = Import[int](client, context.Background(), "add", []interface{}{10, 20}) }},
 		{"error", func() { _, _ = Import[int](client, context.Background(), "raise_error", nil) }},
@@ -605,7 +605,7 @@ func BenchmarkFuncComplexity(b *testing.B) {
 		{"noop", func() { _, _ = Import[int](client, context.Background(), "noop", nil) }},
 		{"fib-20", func() { _, _ = Import[int](client, context.Background(), "fib20", nil) }},
 		{"fib-30", func() { _, _ = Import[int](client, context.Background(), "fib30", nil) }},
-		{"json-marshal", func() { _, _ = Import[string](client, context.Background(), "jsonMarshal", nil) }},
+		{"json-marshal", func() { _, _ = Import[string, string](client, "jsonMarshal", nil) }},
 		{"sleep-1ms", func() { _, _ = Import[int](client, context.Background(), "sleep1ms", nil) }},
 	}
 	for _, bb := range benches {
@@ -653,7 +653,7 @@ func BenchmarkResultSize(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				Import[string](client, context.Background(), "bigResult", []interface{}{n})
+				Import[int, string](client, "bigResult", []interface{}{n})
 			}
 			b.StopTimer()
 			b.ReportMetric(float64(n), "bytes/result")
@@ -673,7 +673,7 @@ func BenchmarkStructRoundTrip(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			Import[testStruct10](client, context.Background(), "echo10", []interface{}{s10})
+			Import[testStruct10, testStruct10](client, "echo10", []interface{}{s10})
 		}
 	})
 
@@ -681,7 +681,7 @@ func BenchmarkStructRoundTrip(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			Import[testStruct50](client, context.Background(), "echo50", []interface{}{s50})
+			Import[testStruct50, testStruct50](client, "echo50", []interface{}{s50})
 		}
 	})
 }
@@ -698,7 +698,7 @@ func BenchmarkStringSize(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				Import[string](client, context.Background(), "echoStr", []interface{}{payload})
+				Import[string, string](client, "echoStr", []interface{}{payload})
 			}
 			b.StopTimer()
 			b.ReportMetric(float64(n), "bytes/arg")
@@ -717,7 +717,7 @@ func BenchmarkNestedData(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				Import[map[string]interface{}](client, context.Background(), "nestedMap", []interface{}{d})
+				Import[int, map[string]interface{}](client, "nestedMap", []interface{}{d})
 			}
 		})
 	}

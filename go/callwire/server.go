@@ -12,18 +12,25 @@ import (
 var (
 	registry      = map[string]interface{}{}
 	registryMu    sync.RWMutex
-	autoServeOnce sync.Once
+	autoServeMu   sync.Mutex
+	autoServeDone bool
 )
 
 func Export(name string, fn interface{}) {
 	registryMu.Lock()
 	registry[name] = fn
 	registryMu.Unlock()
-	autoServeOnce.Do(autoServe)
+	autoServe()
 }
 
 func autoServe() {
+	autoServeMu.Lock()
+	defer autoServeMu.Unlock()
+	if autoServeDone {
+		return
+	}
 	if os.Getenv("CALLWIRE_AUTO") == "0" {
+		autoServeDone = true
 		return
 	}
 	go func() {
@@ -33,6 +40,7 @@ func autoServe() {
 			log.Printf("callwire: auto-serve on %s failed: %v", addr, err)
 			return
 		}
+		autoServeDone = true
 		log.Printf("callwire: auto-serving on %s", addr)
 		for {
 			conn, err := listener.Accept()
@@ -75,6 +83,13 @@ func handleConnection(conn net.Conn) {
 }
 
 func dispatch(conn net.Conn, msg wireMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			payload, _ := encodeError(msg.ID, "PanicError", "function panicked")
+			writeFrame(conn, payload)
+		}
+	}()
+
 	registryMu.RLock()
 	fn, ok := registry[msg.Func]
 	registryMu.RUnlock()
@@ -101,8 +116,12 @@ func dispatch(conn net.Conn, msg wireMessage) {
 
 	in := make([]reflect.Value, len(args))
 	for i, arg := range args {
-		argValue := reflect.ValueOf(arg)
 		paramType := fnType.In(i)
+		argValue := reflect.ValueOf(arg)
+		if !argValue.IsValid() {
+			in[i] = reflect.Zero(paramType)
+			continue
+		}
 		if argValue.Type() != paramType {
 			if argValue.Type().ConvertibleTo(paramType) {
 				argValue = argValue.Convert(paramType)
@@ -111,16 +130,7 @@ func dispatch(conn net.Conn, msg wireMessage) {
 		in[i] = argValue
 	}
 
-	var results []reflect.Value
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				payload, _ := encodeError(msg.ID, "PanicError", "function panicked")
-				writeFrame(conn, payload)
-			}
-		}()
-		results = fnValue.Call(in)
-	}()
+	results := fnValue.Call(in)
 
 	if results == nil {
 		payload, _ := encodeResponse(msg.ID, nil)

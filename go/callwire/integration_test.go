@@ -1,6 +1,7 @@
 package callwire
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -28,6 +29,7 @@ serve("localhost", %s)
 `, filepath.Join(repoRoot, "python"), pythonCode, port)
 
 	cmd := exec.Command(pyBin, "-c", code)
+	cmd.Env = append(os.Environ(), "CALLWIRE_AUTO=0")
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -68,7 +70,7 @@ def double(x):
 	}
 	t.Cleanup(func() { client.Close() })
 
-	result, err := Import[int, int](client, "double", []interface{}{21})
+	result, err := Import[int](client, context.Background(), "double", []interface{}{21})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +94,7 @@ def crash():
 	}
 	t.Cleanup(func() { client.Close() })
 
-	_, err = Import[int, int](client, "crash", nil)
+	_, err = Import[int](client, context.Background(), "crash", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -123,7 +125,7 @@ def exists():
 	}
 	t.Cleanup(func() { client.Close() })
 
-	_, err = Import[string, string](client, "does_not_exist", nil)
+	_, err = Import[string](client, context.Background(), "does_not_exist", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -158,7 +160,7 @@ def slow_add(a, b):
 	for i := 0; i < 10; i++ {
 		i := i
 		go func() {
-			r, e := Import[int, int](client, "slow_add", []interface{}{i, i})
+			r, e := Import[int](client, context.Background(), "slow_add", []interface{}{i, i})
 			results <- struct {
 				id  int
 				val int
@@ -201,7 +203,7 @@ func TestGoToGoIntegration(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	result, err := Import[int, int](client, "square", []interface{}{9})
+	result, err := Import[int](client, context.Background(), "square", []interface{}{9})
 	if err != nil {
 		t.Fatalf("square: %v", err)
 	}
@@ -210,7 +212,7 @@ func TestGoToGoIntegration(t *testing.T) {
 	}
 	t.Log("SUCCESS: Go→Go square(9) =", result)
 
-	_, err = Import[int, int](client, "adderr", nil)
+	_, err = Import[int](client, context.Background(), "adderr", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

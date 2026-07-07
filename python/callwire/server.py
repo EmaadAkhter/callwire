@@ -59,6 +59,7 @@ def _ensure_server():
     except OSError as e:
         print(f"callwire: failed to start server on {host}:{port}: {e}")
         _auto_started = False
+        raise RuntimeError(f"callwire: failed to start server on {host}:{port}: {e}") from e
 
 
 def _auto_serve_loop(listener):

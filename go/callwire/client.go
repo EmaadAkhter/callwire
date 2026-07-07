@@ -1,11 +1,13 @@
 package callwire
 
 import (
+	"context"
 	"net"
 	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -121,7 +123,7 @@ func RefWithClient[Resp any](c *Client, funcName string) func(...interface{}) (R
 		if cleanArgs == nil {
 			cleanArgs = []interface{}{}
 		}
-		r, err := Import[interface{}, Resp](c, funcName, cleanArgs)
+		r, err := Import[Resp](c, context.Background(), funcName, cleanArgs)
 		if err != nil {
 			return zero, err
 		}
@@ -129,8 +131,15 @@ func RefWithClient[Resp any](c *Client, funcName string) func(...interface{}) (R
 	}
 }
 
-func Import[Req any, Resp any](c *Client, funcName string, args []interface{}) (Resp, error) {
+func Import[Resp any](c *Client, ctx context.Context, funcName string, args []interface{}) (Resp, error) {
 	var zero Resp
+
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+
 	id := atomic.AddUint64(&c.nextID, 1)
 	respChan := make(chan wireMessage, 1)
 
@@ -154,18 +163,21 @@ func Import[Req any, Resp any](c *Client, funcName string, args []interface{}) (
 		return zero, err
 	}
 
-	msg := <-respChan
-
-	if msg.Type == "error" {
-		return zero, &WireError{ErrorType: msg.ErrorType, Message: msg.Message}
+	select {
+	case msg := <-respChan:
+		if msg.Type == "error" {
+			return zero, &WireError{ErrorType: msg.ErrorType, Message: msg.Message}
+		}
+		resultBytes, err := msgpack.Marshal(msg.Result)
+		if err != nil {
+			return zero, err
+		}
+		var resp Resp
+		if err := msgpack.Unmarshal(resultBytes, &resp); err != nil {
+			return zero, err
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return zero, ctx.Err()
 	}
-	resultBytes, err := msgpack.Marshal(msg.Result)
-	if err != nil {
-		return zero, err
-	}
-	var resp Resp
-	if err := msgpack.Unmarshal(resultBytes, &resp); err != nil {
-		return zero, err
-	}
-	return resp, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -51,7 +52,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := callwire.Import[string, interface{}](client, funcName, args)
+	result, err := callwire.Import[interface{}](client, context.Background(), funcName, args)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
