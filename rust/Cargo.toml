@@ -1,7 +1,29 @@
 [package]
 name = "callwire"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
+description = "High-performance bidirectional RPC over TCP with MessagePack framing — Go, Python, Rust interop"
+license = "MIT"
+repository = "https://github.com/emaad/callwire"
+homepage = "https://github.com/emaad/callwire"
+documentation = "https://docs.rs/callwire"
+readme = "../README.md"
+keywords = ["rpc", "msgpack", "ipc", "async", "tls"]
+categories = ["network-programming", "asynchronous", "encoding"]
+exclude = ["tests/*", "examples/*", "target/*"]
+
+[lib]
+name = "callwire"
+path = "src/lib.rs"
+
+
+[[example]]
+name = "cross_lang_server"
+path = "examples/cross_lang_server.rs"
+
+[[example]]
+name = "cross_lang_client"
+path = "examples/cross_lang_client.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -14,6 +36,9 @@ bytes = "1.5"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pemfile = "2"
+toml = "0.8"
+anyhow = "1.0"
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

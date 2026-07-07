@@ -1,5 +1,7 @@
 # ─── Python ───────────────────────────────────────────────────────────────────
 python/.venv/
+python/dist/
+python/.hatch/
 python/__pycache__/
 **/__pycache__/
 *.py[cod]
@@ -30,6 +32,46 @@ vendor/
 rust/target/
 **/*.rs.bk
 Cargo.lock          # comment out if this is a binary crate and you want to pin
+
+# ─── JavaScript / TypeScript / Node.js ───────────────────────────────────────
+node_modules/
+# Build output
+ts/dist/
+ts/build/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+# Cache
+.npm/
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.turbo/
+.cache/
+*.tsbuildinfo
+# Test & coverage
+coverage/
+.nyc_output/
+# Misc runtime artefacts
+*.pid
+*.seed
+*.pid.lock
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# Dependency lockfiles (keep package-lock.json; ignore others if not used)
+yarn.lock
+pnpm-lock.yaml
+# Environment
+.env
+.env.local
+.env.*.local
 
 # ─── TLS test artefacts ───────────────────────────────────────────────────────
 *.pem
@@ -67,5 +109,3 @@ desktop.ini
 *.tmp
 *.bak
 *.orig
-.env
-.env.*

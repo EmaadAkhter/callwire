@@ -1,0 +1,28 @@
+# callwire.toml
+# ─────────────────────────────────────────────────────────────────────────────
+# This manifest declares all the worker services that make up this project.
+#
+# Any file that calls callwire.init() will:
+#   1. Start a dynamic registry on a random OS-assigned port.
+#   2. Spawn each declared service as a child process (with CALLWIRE_SPAWNED=1).
+#   3. Each worker auto-registers its exported functions with the registry.
+#   4. The parent routes client calls transparently — zero port config needed.
+#
+# Usage:
+#   python -m callwire init         # generate a default callwire.toml configuration
+#   callwire.init()                 # spawn workers & start routing in your code
+# ─────────────────────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-demo"
+version = "1.0.0"
+
+# ── Worker services ──────────────────────────────────────────────────────────
+
+[services.go-worker]
+dev_cmd  = "cd go/callwire && go run ../../examples/simple_go_server.go"
+prod_cmd = "./bin/go-worker"
+
+[services.rust-worker]
+dev_cmd  = "cd rust && cargo run --quiet --example orchestrated_rust_worker"
+prod_cmd = "./bin/rust-worker"
