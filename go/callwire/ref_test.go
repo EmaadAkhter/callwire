@@ -6,8 +6,8 @@ import (
 )
 
 func TestRefWithClient(t *testing.T) {
-	Export("double", func(x int) int { return x * 2 })
-	Export("greet", func(name string) string { return "hi " + name })
+	MustExport("double", func(x int) int { return x * 2 })
+	MustExport("greet", func(name string) string { return "hi " + name })
 
 	go Serve("localhost:9199")
 	waitForPort(t, "9199", 5*time.Second)
@@ -40,7 +40,7 @@ func TestRefWithClient(t *testing.T) {
 }
 
 func TestRefSeamless(t *testing.T) {
-	Export("add", func(a, b int) int { return a + b })
+	MustExport("add", func(a, b int) int { return a + b })
 
 	go Serve("localhost:9190")
 	waitForPort(t, "9190", 5*time.Second)

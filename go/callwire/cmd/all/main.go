@@ -24,8 +24,8 @@ func main() {
 	}
 
 	callwire.Configure("", 9098)
-	callwire.Export("double", func(x int) int { return x * 2 })
-	callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
+	callwire.MustExport("double", func(x int) int { return x * 2 })
+	callwire.MustExport("upper", func(s string) string { return strings.ToUpper(s) })
 
 	goClient, err := callwire.Connect("localhost:9098")
 	if err != nil {

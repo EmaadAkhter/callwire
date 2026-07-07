@@ -17,25 +17,40 @@ var (
 	registryMu    sync.RWMutex
 	autoServeMu   sync.Mutex
 	autoServeDone bool
+	autoListener  net.Listener
 )
 
-func Export(name string, fn interface{}) {
+func validateFunc(name string, fn interface{}) error {
 	fnType := reflect.TypeOf(fn)
 	if fnType.Kind() != reflect.Func {
-		panic(fmt.Sprintf("callwire: Export(%q) requires a function, got %T", name, fn))
+		return fmt.Errorf("callwire: Export(%q) requires a function, got %T", name, fn)
 	}
 	switch n := fnType.NumOut(); {
 	case n > 2:
-		panic(fmt.Sprintf("callwire: exported %q has %d return values; at most 2 (value, error) supported", name, n))
+		return fmt.Errorf("callwire: exported %q has %d return values; at most 2 (value, error) supported", name, n)
 	case n == 2:
 		if !fnType.Out(1).Implements(errorType) {
-			panic(fmt.Sprintf("callwire: exported %q has 2 returns but second is %s, not error", name, fnType.Out(1)))
+			return fmt.Errorf("callwire: exported %q has 2 returns but second is %s, not error", name, fnType.Out(1))
 		}
+	}
+	return nil
+}
+
+func Export(name string, fn interface{}) error {
+	if err := validateFunc(name, fn); err != nil {
+		return err
 	}
 	registryMu.Lock()
 	registry[name] = fn
 	registryMu.Unlock()
 	autoServe()
+	return nil
+}
+
+func MustExport(name string, fn interface{}) {
+	if err := Export(name, fn); err != nil {
+		panic(err)
+	}
 }
 
 func autoServe() {
@@ -54,6 +69,7 @@ func autoServe() {
 		log.Printf("callwire: auto-serve on %s failed: %v", addr, err)
 		return
 	}
+	autoListener = listener
 	autoServeDone = true
 	log.Printf("callwire: auto-serving on %s", addr)
 	go func() {
@@ -65,6 +81,17 @@ func autoServe() {
 			go handleConnection(conn)
 		}
 	}()
+}
+
+func Close() {
+	autoServeMu.Lock()
+	l := autoListener
+	autoListener = nil
+	autoServeDone = false
+	autoServeMu.Unlock()
+	if l != nil {
+		l.Close()
+	}
 }
 
 func Serve(addr string) error {

@@ -189,8 +189,8 @@ def slow_add(a, b):
 // ── Go→Go integration ──────────────────────────────────────────────
 
 func TestGoToGoIntegration(t *testing.T) {
-	Export("square", func(x int) int { return x * x })
-	Export("adderr", func() (int, error) {
+	MustExport("square", func(x int) int { return x * x })
+	MustExport("adderr", func() (int, error) {
 		return 0, &WireError{ErrorType: "ValueError", Message: "nope"}
 	})
 
@@ -229,7 +229,7 @@ func TestGoToGoIntegration(t *testing.T) {
 // ── Python→Go integration ──────────────────────────────────────────
 
 func TestPythonToGoIntegration(t *testing.T) {
-	Export("greet", func(name string) string {
+	MustExport("greet", func(name string) string {
 		return "hello " + name
 	})
 

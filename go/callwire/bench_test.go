@@ -129,50 +129,50 @@ var (
 
 func startBenchGoServerOnce(b testing.TB) {
 	benchSrvOnce.Do(func() {
-		Export("noop", func() {})
-		Export("echo", func(x int) int { return x })
-		Export("echoStr", func(s string) string { return s })
-		Export("add", func(a, b int) int { return a + b })
-		Export("errFn", func() error { return &WireError{ErrorType: "ValueError", Message: "bench-error"} })
-		Export("slow", func(delayMs int) int {
+		MustExport("noop", func() {})
+		MustExport("echo", func(x int) int { return x })
+		MustExport("echoStr", func(s string) string { return s })
+		MustExport("add", func(a, b int) int { return a + b })
+		MustExport("errFn", func() error { return &WireError{ErrorType: "ValueError", Message: "bench-error"} })
+		MustExport("slow", func(delayMs int) int {
 			time.Sleep(time.Duration(delayMs) * time.Millisecond)
 			return delayMs
 		})
-		Export("bigResult", func(size int) string {
+		MustExport("bigResult", func(size int) string {
 			return strings.Repeat("x", size)
 		})
-		Export("manyArgs", func(args ...int) int {
+		MustExport("manyArgs", func(args ...int) int {
 			s := 0
 			for _, a := range args {
 				s += a
 			}
 			return s
 		})
-		Export("nestedMap", func(depth int) map[string]interface{} {
+		MustExport("nestedMap", func(depth int) map[string]interface{} {
 			return genNestedMap(depth)
 		})
-		Export("echo10", func(s testStruct10) testStruct10 { return s })
-		Export("echo50", func(s testStruct50) testStruct50 { return s })
-		Export("fib20", func() int {
+		MustExport("echo10", func(s testStruct10) testStruct10 { return s })
+		MustExport("echo50", func(s testStruct50) testStruct50 { return s })
+		MustExport("fib20", func() int {
 			a, b := 0, 1
 			for i := 0; i < 20; i++ {
 				a, b = b, a+b
 			}
 			return b
 		})
-		Export("fib30", func() int {
+		MustExport("fib30", func() int {
 			a, b := 0, 1
 			for i := 0; i < 30; i++ {
 				a, b = b, a+b
 			}
 			return b
 		})
-		Export("jsonMarshal", func() string {
+		MustExport("jsonMarshal", func() string {
 			data, _ := json.Marshal(map[string]int{"a": 1, "b": 2, "c": 3})
 			return string(data)
 		})
-		Export("sleep1ms", func() { time.Sleep(time.Millisecond) })
-		Export("jsonResult", func() string {
+		MustExport("sleep1ms", func() { time.Sleep(time.Millisecond) })
+		MustExport("jsonResult", func() string {
 			data, _ := json.Marshal(map[string]interface{}{
 				"id": 1, "name": "test", "tags": []string{"a", "b"},
 			})
@@ -314,7 +314,7 @@ func BenchmarkDecodeMessage(b *testing.B) {
 }
 
 func BenchmarkDispatch(b *testing.B) {
-	Export("bench_double", func(x int) int { return x * 2 })
+	MustExport("bench_double", func(x int) int { return x * 2 })
 
 	payload, _ := encodeRequest(1, "bench_double", []interface{}{21})
 

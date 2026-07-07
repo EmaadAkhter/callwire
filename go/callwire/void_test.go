@@ -7,8 +7,8 @@ import (
 )
 
 func TestVoidFunction(t *testing.T) {
-	Export("noop_void", func() {})
-	Export("noop_int", func() int { return 42 })
+	MustExport("noop_void", func() {})
+	MustExport("noop_int", func() int { return 42 })
 	go Serve("localhost:9283")
 	waitForBenchPort(t, "localhost:9283", 5*time.Second)
 

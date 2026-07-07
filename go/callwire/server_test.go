@@ -6,9 +6,9 @@ import (
 )
 
 func TestServerDispatch(t *testing.T) {
-	Export("add", func(a, b int) int { return a + b })
-	Export("err", func() error { return &WireError{ErrorType: "ValueError", Message: "boom"} })
-	Export("multi", func(a int) (int, error) {
+	MustExport("add", func(a, b int) int { return a + b })
+	MustExport("err", func() error { return &WireError{ErrorType: "ValueError", Message: "boom"} })
+	MustExport("multi", func(a int) (int, error) {
 		if a < 0 {
 			return 0, &WireError{ErrorType: "ValueError", Message: "negative"}
 		}
