@@ -1,94 +1,76 @@
-# Callwire Wire Protocol — v1
+# Callwire Wire Protocol — v2 Specification
 
-Plain TCP, length-prefixed msgpack. No TLS, no auth — localhost / trusted network only.
+Callwire is a language-agnostic, bidirectional RPC protocol designed for high-performance and lightweight communication. It uses a length-prefixed MessagePack framing format over TCP.
 
-## Frame format
+Because the protocol is fully documented and language-agnostic, you can build implementations in any language (e.g. C#, JS, C++, Go, Python, Rust) simply by adhering to this specification.
+
+---
+
+## Transport & Framing
+
+- **Transport:** Raw TCP or TCP wrapped in TLS (supporting server authentication and optional Mutual TLS).
+- **Framing:** Each message is prefixed with a 4-byte big-endian `uint32` indicating the length of the subsequent MessagePack payload.
 
 ```
 [4 bytes: big-endian uint32 payload length][N bytes: msgpack payload]
 ```
 
-Length prefix is **payload only**, not including the 4-byte header itself.
+---
 
-## Message types
+## Message Schema (MessagePack Map)
 
-### Request
+Every payload is serialized as a MessagePack map (string keys). The following fields are defined:
 
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uint64` | Monotonically increasing identifier matching requests to responses |
+| `type` | `string` | One of: `"request"`, `"response"`, `"error"`, `"stream_chunk"`, `"stream_end"` |
+| `func` | `string` | (Request only) The name of the function to invoke |
+| `args` | `array` | (Request only) Positional arguments for the function |
+| `result` | `any` | (Response/Stream only) Return value |
+| `error_type`| `string` | (Error only) Classification/name of the error |
+| `message` | `string` | (Error only) Human-readable error message |
+
+### Request Example
 ```json
 {
-  "id": 17,
+  "id": 101,
   "type": "request",
-  "func": "predict",
-  "args": [1.5, 2.0]
+  "func": "add",
+  "args": [10, 20]
 }
 ```
 
-- `id`: uint64, monotonically increasing per connection
-- `type`: literal `"request"`
-- `func`: string, name of the function to call on the server
-- `args`: array of positional arguments
-
-### Success response
-
+### Success Response Example
 ```json
 {
-  "id": 17,
+  "id": 101,
   "type": "response",
-  "result": ...
+  "result": 30
 }
 ```
 
-- `id`: matches the request
-- `type`: literal `"response"`
-- `result`: any msgpack-encodable value
-
-### Error response
-
+### Error Response Example
 ```json
 {
-  "id": 17,
+  "id": 101,
   "type": "error",
   "error_type": "ValueError",
-  "message": "inches must be positive"
+  "message": "Invalid input values"
 }
 ```
 
-- `id`: matches the request
-- `type`: literal `"error"`
-- `error_type`: string, exception class name on Python side, mapped to `WireError.ErrorType` on Go side
-- `message`: human-readable description
+---
 
-## Type mapping
+## Bidirectional & Batch RPCs
 
-| Python | Wire (msgpack) | Go |
-|--------|----------------|-----|
-| `int` | int | `int64` |
-| `float` | float64 | `float64` |
-| `str` | str | `string` |
-| `None` | nil | `nil` / zero value |
-| `bool` | bool | `bool` |
-| `list` | array | `[]interface{}` |
-| `dict` | map | `map[string]interface{}` |
-| exception | error_type + message | `*WireError` |
+- **Bidirectional Symmetry:** Both clients and servers can initiate requests over the same TCP socket.
+- **Batching:** Clients can send multiple request frames sequentially without waiting for individual responses. The server executes these concurrently and returns matching response frames out-of-order.
 
-### Known edge: Python `None` → Go value types
+---
 
-msgpack has no native `None` for Go's value types. A Python `None` passed as an `int` arg will unpack into Go as the type's zero value (`0`), **not** an explicit null. This is a documented limitation — don't try to "fix" it with special-case marshalling; the behavior is consistent and predictable across all msgpack implementations.
+## Built-In Service Registry
 
-### Known edge: Go `msgpack.Marshal`/`Unmarshal` round-trip fragility
-
-msgpack decodes into generic `interface{}` types (maps, slices). Using a raw type assertion on `msg.Result.(Resp)` works only for simple scalar types. For struct types, expect to need a two-step: `msgpack.Marshal(msg.Result)` then `msgpack.Unmarshal` into the concrete `Resp` type.
-
-## Concurrency model
-
-- **Python server:** thread-per-connection, blocking I/O, one request processed at a time per connection. No server-side multiplexing in v1.
-- **Go client:** single-reader goroutine per connection writes responses to pending-call channels. Writes serialized with a mutex. Multiple in-flight requests on one connection supported (matched by `id`).
-
-## Out of scope (v1)
-
-- TLS / authentication
-- Connection pooling / reconnection
-- Streaming / server-side push
-- Code generation
-- Third language implementations
-- Shared core library
+The registry is itself a standard Callwire server exporting two RPC endpoints:
+1. `register(service_name: string, addr: string) -> nil`
+2. `discover(service_name: string) -> []string`

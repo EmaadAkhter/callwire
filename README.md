@@ -1,175 +1,174 @@
-# Callwire
+# Callwire v2
 
-Bidirectional RPC: Python ↔ Go over TCP with msgpack framing. Both sides can serve and call.
+A high-performance, bidirectional RPC framework for Go, Python, and Rust over TCP with MessagePack framing. Both sides of any connection can act as a client and server simultaneously.
 
-**Security:** Plain TCP on localhost / trusted network only. No TLS. Not for untrusted networks.
+> [!IMPORTANT]
+> **Language-Agnostic Design:** Callwire is designed around a simple, clean, and fully-specified wire protocol. You can implement clients and servers in any language by following the [SPEC.md](file:///Users/emaad/Developer/callwire/SPEC.md).
 
-## Quick start
+## Features
 
-### Python
+- **Multi-Language:** First-class support for Go, Python, and Rust.
+- **Bidirectional:** Connection-symmetric. Clients can serve endpoints and servers can invoke client functions over the same socket.
+- **TLS & mTLS:** Secure transport with server authentication and optional Mutual TLS (mTLS).
+- **Service Discovery:** Built-in lightweight registry server and auto-refreshing client `DiscoverPool`.
+- **Dynamic Reconnections:** Auto-reconnect with exponential backoff on connection drops.
+- **Batch API:** Concurrent RPC multiplexing on a single connection.
 
-```python
-from callwire import export, ref
+---
 
-@export                                   # registers + auto-starts server on localhost:9090
-def double(x):
-    return x * 2
-
-d = ref("double")                         # connect to local server
-print(d(21))                              # 42 — call over TCP
-```
-
-Server auto-starts on the first `@export`. No `serve()` needed.
+## Quick Start
 
 ### Go
 
 ```go
 import "github.com/emaad/callwire"
 
-double := callwire.Ref[int]("double")   // lazy default client to localhost:9090
-result, _ := double(21)
-fmt.Println(result) // 42
-```
+// 1. Export local function
+callwire.Export("add", func(a, b int) int { return a + b })
 
-For a custom address:
-
-```go
-callwire.Configure("0.0.0.0", 9091)
-d := callwire.Ref[int]("double")
-```
-
-Or with an explicit client:
-
-```go
+// 2. Call remote function using client
 client, _ := callwire.Connect("localhost:9090")
-double := callwire.RefWithClient[int](client, "double")
+addFunc := callwire.RefWithClient[int](client, "add")
+result, _ := addFunc(10, 20) // 30
 ```
 
-### Go server side
+### Python
+
+```python
+from callwire import export, serve, Client
+
+# 1. Export local function
+@export
+def add(a, b):
+    return a + b
+
+# 2. Call remote function
+client = Client()
+client.connect("localhost", 9090)
+result = client.call("add", [10, 20]) # 30
+```
+
+### Rust
+
+```rust
+use callwire::{Client, register_unary, serve_on};
+
+// 1. Export local function
+register_unary("add", |(a, b): (i64, i64)| -> Result<i64, String> {
+    Ok(a + b)
+});
+
+// 2. Call remote function
+let client = Client::connect("127.0.0.1:9090").await.unwrap();
+let result: i64 = client.import("add", &(10i64, 20i64)).await.unwrap(); // 30
+```
+
+---
+
+## TLS & Mutual TLS (mTLS)
+
+Callwire v2 supports standard TLS and client certificate verification (mTLS).
+
+### Go TLS Server & Client
 
 ```go
-callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
-// server auto-starts on localhost:9090 (CALLWIRE_HOST:CALLWIRE_PORT)
+// Server
+cfg := callwire.TLSConfig{CertPem: cert, KeyPem: key}
+callwire.ServeWithTLS("0.0.0.0:9090", cfg)
+
+// Client
+clientCfg := callwire.TLSConfig{CAPem: caCert}
+client, _ := callwire.ConnectWithReconnectTLS("localhost:9090", clientCfg)
 ```
 
-For a different port:
+### Python TLS Client
+
+```python
+client = Client()
+client.connect("localhost", 9090, tls={
+    "cafile": "ca.pem",
+    "certfile": "client.pem", # for mTLS
+    "keyfile": "client.key"    # for mTLS
+})
+```
+
+### Rust TLS Client
+
+```rust
+let client_cfg = callwire::TlsConfig {
+    cert_pem: vec![],
+    key_pem: vec![],
+    ca_pem: Some(ca_pem), // Server CA cert
+};
+let client = client_cfg.connect("127.0.0.1:9090").await.unwrap();
+```
+
+---
+
+## Service Discovery
+
+Callwire features a built-in Service Discovery registry (itself powered by Callwire RPC).
+
+### Go Registry & Worker Setup
 
 ```go
-callwire.Configure("0.0.0.0", 9098)
-callwire.Export("upper", func(s string) string { return strings.ToUpper(s) })
+// 1. Start the registry server
+callwire.ServeRegistry("127.0.0.1:29090")
+
+// 2. Start a worker and register it
+callwire.Export("say_hello", func(name string) string { return "Hello " + name })
+go callwire.Serve("127.0.0.1:29091")
+callwire.RegisterWith("127.0.0.1:29090", "hello-service", "127.0.0.1:29091")
+
+// 3. Resolve and call using DiscoverPool
+pool, _ := callwire.NewDiscoverPool("127.0.0.1:29090", "hello-service")
+sayHello := callwire.DiscoverRef[string](pool, "say_hello")
+reply, _ := sayHello("World") // "Hello World"
 ```
 
-`callwire.Serve(":9098")` is still available for explicit blocking servers.
+### Python DiscoverPool
 
-## All 4 directions
+```python
+from callwire import DiscoverPool
 
-Both sides are symmetric — add to either or both:
-
-```
-Go client  →  Python server    (Ref  →  @export)       ← both seamless
-Python client → Go server      (ref  →  Export)        ← both seamless
-Python → Python                 (ref → @export)         ← seamless
-Go → Go                         (Ref → Export)          ← seamless
+pool = DiscoverPool("127.0.0.1:29090", "hello-service")
+client = pool.get()
+result = client.call("say_hello", ["World"])
 ```
 
-Run the demo:
+### Rust DiscoverPool
 
-```bash
-./examples/demo.sh
+```rust
+use callwire::DiscoverPool;
+
+let pool = DiscoverPool::new("127.0.0.1:29090", "hello-service").await.unwrap();
+let client = pool.get().unwrap();
+let res: String = client.import("say_hello", &("World".to_string(),)).await.unwrap();
 ```
 
-The script starts both services, waits for readiness, then exercises all four directions with JSON output:
-
-1. Go → Python
-2. Go → Go
-3. Python → Go
-4. Python → Python
-
-By default, the script uses high ports to avoid local conflicts:
-- Go callwire `19098`, Go HTTP `18089`
-- Python callwire `19099`, Python HTTP `18088`
-
-You can also run the two example apps directly and use their built-in guided demo endpoints:
-
-```bash
-# terminal 1
-python examples/python_all.py
-
-# terminal 2
-cd go/callwire && go run ./cmd/all/
-```
-
-Then open:
-
-- `http://localhost:8088/demo` (Python-side demo)
-- `http://localhost:8089/demo` (Go-side demo)
-
-## Project structure
-
-```
-callwire/
-├── SPEC.md                          # wire format + type mapping
-├── python/callwire/
-│   ├── __init__.py                  # export, serve, configure, Client, ref
-│   ├── server.py                    # @export, serve(), auto-start, configure()
-│   ├── client.py                    # Client class (reader goroutine + write mutex)
-│   ├── ref.py                       # ref() — seamless function call proxy
-│   ├── framing.py                   # length-prefix TCP (looping recv)
-│   ├── codec.py                     # msgpack pack/unpack
-│   └── errors.py                    # allowlist-based error exposure
-├── go/callwire/
-│   ├── client.go                    # Connect(), Import(), Ref[Resp](), RefWithClient[Resp](), Configure()
-│   ├── server.go                    # Export(), Serve(), reflection dispatch
-│   ├── framing.go                   # io.ReadFull for partial-read safety
-│   ├── codec.go                     # msgpack encode/decode
-│   └── errors.go                    # WireError type
-├── examples/
-│   ├── python_all.py                # Python all-in-one (callwire + HTTP)
-│   ├── go_all.go → go/callwire/cmd/all/main.go
-│   └── demo.sh                      # starts both, runs all 4 directions
-├── benchmarks/
-│   └── compare_grpc.md
-```
+---
 
 ## Configuration
 
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `CALLWIRE_HOST` | `localhost` | Auto-start bind host / default client address |
-| `CALLWIRE_PORT` | `9090` | Auto-start bind port / default client address |
-| `CALLWIRE_AUTO` | `1` | Set to `0` to disable auto-start |
+| Env Var | Default | Description |
+|---|---|---|
+| `CALLWIRE_HOST` | `localhost` | Default hostname for auto-serving & clients |
+| `CALLWIRE_PORT` | `9090` | Default port for auto-serving & clients |
+| `CALLWIRE_AUTO` | `1` | Set to `0` to disable automatic server launching on Export |
 
-Python:
+---
 
-```python
-from callwire import configure
-configure(host="0.0.0.0", port=9091)
-```
+## Developer Testing
 
-Go:
-
-```go
-callwire.Configure("0.0.0.0", 9091)
-```
-
-Must be called before any `@export` / `Ref[ ]`.
-
-## Development
+Run the full cross-language integration and unit suites:
 
 ```bash
+# Go tests
+cd go/callwire && go test -v ./...
+
 # Python tests
-cd python && .venv/bin/python test_self.py && .venv/bin/python test_smoke.py && .venv/bin/python test_client.py
+cd python && .venv/bin/python3 -m unittest discover -s . -p "test_*.py"
 
-# Go tests (includes integration against Python server)
-cd go/callwire && go test -v -timeout 120s ./...
+# Rust tests
+cd rust && cargo test -- --nocapture
 ```
-
-## Known edges
-
-- **`None` → Go value types:** A Python `None` in an `int` argument unpacks to Go's zero value (`0`). msgpack limitation, not a bug.
-- **Result type decoding:** Go `Import[Req, Resp]` uses a msgpack marshal/unmarshal round-trip — struct types need matching field names/tags.
-- **Python `ref()`** caches one TCP connection per address. Lazy-connects on first call.
-
-## Out of scope (v1)
-
-TLS, connection pooling, reconnection, streaming, code generation, third languages.
