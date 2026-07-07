@@ -8,10 +8,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 from callwire import export, configure, ref
 
-HOST = "localhost"
-CALLWIRE_PORT = 9099
-HTTP_PORT = 8088
-GO_CALLWIRE = "localhost:9098"
+HOST = os.getenv("CALLWIRE_DEMO_HOST", "localhost")
+CALLWIRE_PORT = int(os.getenv("PY_CALLWIRE_PORT", "9099"))
+HTTP_PORT = int(os.getenv("PY_HTTP_PORT", "8088"))
+GO_CALLWIRE = os.getenv("GO_CALLWIRE_ADDR", "localhost:9098")
+
+if ":" in GO_CALLWIRE:
+    GO_HOST, GO_PORT_STR = GO_CALLWIRE.rsplit(":", 1)
+else:
+    GO_HOST, GO_PORT_STR = GO_CALLWIRE, "9098"
+GO_PORT = int(GO_PORT_STR)
 
 configure(host=HOST, port=CALLWIRE_PORT)
 
@@ -31,13 +37,27 @@ def _go(name):
     if go_ref is None:
         go_ref = {}
     if name not in go_ref:
-        go_ref[name] = ref(name, host="localhost", port=9098)
+        go_ref[name] = ref(name, host=GO_HOST, port=GO_PORT)
     return go_ref[name]
 
 def _py(name):
     if name not in py_ref:
         py_ref[name] = ref(name)
     return py_ref[name]
+
+def _parse_args(qs):
+    args = []
+    for key in sorted(qs.keys()):
+        if key == "func" or not qs[key]:
+            continue
+        v = qs[key][0]
+        if key in ("i", "int"):
+            args.append(int(v))
+        elif key in ("f", "float"):
+            args.append(float(v))
+        else:
+            args.append(v)
+    return args
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -50,6 +70,10 @@ class Handler(BaseHTTPRequestHandler):
             self._call(_go, qs)
         elif path == "/python-to-python":
             self._call(_py, qs)
+        elif path == "/health":
+            self._health()
+        elif path == "/demo":
+            self._demo()
         elif path == "/go-to-python":
             self._info_route("Go → Python", "go_all.go can call Python via localhost:9099", ["greet(name)", "reverse(s)"])
         else:
@@ -60,12 +84,7 @@ class Handler(BaseHTTPRequestHandler):
         if not func:
             self._error("missing func parameter", 400)
             return
-        args = []
-        for key, vals in qs.items():
-            if key == "func" or not vals:
-                continue
-            v = vals[0]
-            args.append(int(v) if key in ("i", "int") else float(v) if key in ("f", "float") else v)
+        args = _parse_args(qs)
         try:
             result = source(func)(*args)
             self._ok({"result": result})
@@ -81,9 +100,33 @@ class Handler(BaseHTTPRequestHandler):
             "callwire": f"{HOST}:{CALLWIRE_PORT}",
             "http": f":{HTTP_PORT}",
             "endpoints": {
+                "/health": "status and linked services",
+                "/demo": "demo calls you can run directly",
                 "/python-to-go?func=upper&s=world": "Python client → Go server",
                 "/python-to-python?func=greet&s=you": "Python client → Python server",
             },
+        })
+
+    def _health(self):
+        self._ok({
+            "status": "ok",
+            "services": {
+                "python_callwire": f"{HOST}:{CALLWIRE_PORT}",
+                "python_http": f":{HTTP_PORT}",
+                "go_callwire": GO_CALLWIRE,
+            },
+        })
+
+    def _demo(self):
+        self._ok({
+            "overview": "Python all-in-one demo",
+            "calls": [
+                {"title": "Python -> Python (greet)", "url": "/python-to-python?func=greet&s=world"},
+                {"title": "Python -> Python (reverse)", "url": "/python-to-python?func=reverse&s=hello"},
+                {"title": "Python -> Go (double)", "url": "/python-to-go?func=double&i=10"},
+                {"title": "Python -> Go (upper)", "url": "/python-to-go?func=upper&s=world"},
+            ],
+            "also_available": "Go-side demo routes are served at http://localhost:8089/demo",
         })
 
     def _ok(self, data):

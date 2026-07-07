@@ -78,6 +78,32 @@ Run the demo:
 ./examples/demo.sh
 ```
 
+The script starts both services, waits for readiness, then exercises all four directions with JSON output:
+
+1. Go → Python
+2. Go → Go
+3. Python → Go
+4. Python → Python
+
+By default, the script uses high ports to avoid local conflicts:
+- Go callwire `19098`, Go HTTP `18089`
+- Python callwire `19099`, Python HTTP `18088`
+
+You can also run the two example apps directly and use their built-in guided demo endpoints:
+
+```bash
+# terminal 1
+python examples/python_all.py
+
+# terminal 2
+cd go/callwire && go run ./cmd/all/
+```
+
+Then open:
+
+- `http://localhost:8088/demo` (Python-side demo)
+- `http://localhost:8089/demo` (Go-side demo)
+
 ## Project structure
 
 ```

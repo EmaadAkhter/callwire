@@ -1,49 +1,107 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PY_BIN="$ROOT/python/.venv/bin/python"
+if [[ ! -x "$PY_BIN" ]]; then
+  PY_BIN="$(command -v python3)"
+fi
+
+for cmd in curl go "$PY_BIN"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "missing dependency: $cmd"
+    exit 1
+  fi
+done
+
+PY_LOG="${TMPDIR:-/tmp}/callwire-python-demo.log"
+GO_LOG="${TMPDIR:-/tmp}/callwire-go-demo.log"
+PY_PID=""
+GO_PID=""
+HOST="${HOST:-localhost}"
+GO_CW_PORT="${GO_CW_PORT:-19098}"
+GO_HTTP_PORT="${GO_HTTP_PORT:-18089}"
+PY_CW_PORT="${PY_CW_PORT:-19099}"
+PY_HTTP_PORT="${PY_HTTP_PORT:-18088}"
 
 cleanup() {
-  echo ""; echo "shutting down..."
-  kill $PY_PID $GO_PID 2>/dev/null; wait $PY_PID $GO_PID 2>/dev/null
+  echo ""
+  echo "shutting down demo services..."
+  if [[ -n "$PY_PID" ]]; then kill "$PY_PID" 2>/dev/null || true; fi
+  if [[ -n "$GO_PID" ]]; then kill "$GO_PID" 2>/dev/null || true; fi
+  if [[ -n "$PY_PID" ]]; then wait "$PY_PID" 2>/dev/null || true; fi
+  if [[ -n "$GO_PID" ]]; then wait "$GO_PID" 2>/dev/null || true; fi
 }
 trap cleanup EXIT INT TERM
 
-echo "=== Starting Python (callwire :9099, http :8088) ==="
-"$ROOT/python/.venv/bin/python" "$ROOT/examples/python_all.py" &
+wait_http() {
+  local url="$1"
+  local name="$2"
+  for _ in $(seq 1 30); do
+    if curl -fsS -o /dev/null "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "failed waiting for $name at $url"
+  echo "--- $name log ---"
+  if [[ "$name" == "python" ]]; then cat "$PY_LOG"; else cat "$GO_LOG"; fi
+  exit 1
+}
+
+pretty_json() {
+  "$PY_BIN" -m json.tool
+}
+
+run_case() {
+  local title="$1"
+  local url="$2"
+  local body=""
+  echo ""
+  echo "[$title]"
+  for _ in $(seq 1 8); do
+    body="$(curl -sS "$url" || true)"
+    if echo "$body" | grep -q '"result"'; then
+      echo "$body" | pretty_json
+      return 0
+    fi
+    sleep 1
+  done
+  echo "request failed after retries: $url"
+  echo "$body" | pretty_json
+  exit 1
+}
+
+echo "Starting Python demo service..."
+echo "  callwire: $HOST:$PY_CW_PORT, http: :$PY_HTTP_PORT"
+CALLWIRE_DEMO_HOST="$HOST" \
+PY_CALLWIRE_PORT="$PY_CW_PORT" \
+PY_HTTP_PORT="$PY_HTTP_PORT" \
+GO_CALLWIRE_ADDR="$HOST:$GO_CW_PORT" \
+"$PY_BIN" "$ROOT/examples/python_all.py" >"$PY_LOG" 2>&1 &
 PY_PID=$!
 
-echo "=== Starting Go   (callwire :9098, http :8089) ==="
-(cd "$ROOT/go/callwire" && go run ./cmd/all/ 2>/dev/null) &
+echo "Starting Go demo service..."
+echo "  callwire: $HOST:$GO_CW_PORT, http: :$GO_HTTP_PORT"
+(cd "$ROOT/go/callwire" && GO_CALLWIRE_PORT="$GO_CW_PORT" GO_HTTP_ADDR=":$GO_HTTP_PORT" go run ./cmd/all/ "$HOST:$PY_CW_PORT" ":$GO_HTTP_PORT" "$GO_CW_PORT") >"$GO_LOG" 2>&1 &
 GO_PID=$!
 
-echo "waiting for servers..."
-for i in $(seq 1 15); do
-  curl -sf -o /dev/null "http://localhost:8089/" && curl -sf -o /dev/null "http://localhost:8088/" && break
-  sleep 1
-done
+wait_http "http://$HOST:$PY_HTTP_PORT/" "python"
+wait_http "http://$HOST:$GO_HTTP_PORT/" "go"
+
 echo ""
+echo "Callwire demo is ready."
+echo "Go HTTP:     http://$HOST:$GO_HTTP_PORT"
+echo "Python HTTP: http://$HOST:$PY_HTTP_PORT"
 
-curl_it() { curl -s "$1" | python3 -m json.tool; }
-retry() { local u="$1"; for i in $(seq 1 5); do
-  local r=$(curl -s "$u")
-  if echo "$r" | grep -q '"result"'; then echo "$r" | python3 -m json.tool; return 0; fi
-  sleep 1; done; curl -s "$u" | python3 -m json.tool; }
+run_case "Go -> Python: greet(world)" "http://$HOST:$GO_HTTP_PORT/go-to-python?func=greet&s=world"
+run_case "Go -> Python: reverse(hello)" "http://$HOST:$GO_HTTP_PORT/go-to-python?func=reverse&s=hello"
+run_case "Go -> Go: double(21)" "http://$HOST:$GO_HTTP_PORT/go-to-go?func=double&i=21"
+run_case "Go -> Go: upper(hello)" "http://$HOST:$GO_HTTP_PORT/go-to-go?func=upper&s=hello"
+run_case "Python -> Go: double(10)" "http://$HOST:$PY_HTTP_PORT/python-to-go?func=double&i=10"
+run_case "Python -> Go: upper(world)" "http://$HOST:$PY_HTTP_PORT/python-to-go?func=upper&s=world"
+run_case "Python -> Python: greet(world)" "http://$HOST:$PY_HTTP_PORT/python-to-python?func=greet&s=world"
+run_case "Python -> Python: reverse(hello)" "http://$HOST:$PY_HTTP_PORT/python-to-python?func=reverse&s=hello"
 
-echo "=== Go -> Python ==="
-curl_it "http://localhost:8089/go-to-python?func=greet&s=world"
-curl_it "http://localhost:8089/go-to-python?func=reverse&s=hello"
-
-echo "=== Go -> Go ==="
-curl_it "http://localhost:8089/go-to-go?func=double&i=21"
-curl_it "http://localhost:8089/go-to-go?func=upper&s=hello"
-
-echo "=== Python -> Go ==="
-retry "http://localhost:8088/python-to-go?func=double&i=10"
-retry "http://localhost:8088/python-to-go?func=upper&s=world"
-
-echo "=== Python -> Python ==="
-curl_it "http://localhost:8088/python-to-python?func=greet&s=world"
-curl_it "http://localhost:8088/python-to-python?func=reverse&s=hello"
-
-echo ""; echo "=== All 4 directions demonstrated ==="
+echo ""
+echo "All 4 directions are working with the same call shape."
