@@ -1,6 +1,7 @@
 package callwire
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -76,6 +77,9 @@ func autoServe() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
 				continue
 			}
 			go handleConnection(conn)
@@ -210,5 +214,4 @@ func dispatch(conn net.Conn, msg wireMessage) {
 	}
 	writeFrame(conn, payload)
 }
-
 
