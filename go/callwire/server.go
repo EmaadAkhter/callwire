@@ -19,6 +19,7 @@ var (
 	autoServeMu   sync.Mutex
 	autoServeDone bool
 	autoListener  net.Listener
+	autoServeStop chan struct{}
 )
 
 func validateFunc(name string, fn interface{}) error {
@@ -71,9 +72,11 @@ func autoServe() {
 		return
 	}
 	autoListener = listener
+	autoServeStop = make(chan struct{})
 	autoServeDone = true
 	log.Printf("callwire: auto-serving on %s", addr)
-	go func() {
+	go func(stop chan struct{}) {
+		defer close(stop)
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
@@ -84,17 +87,22 @@ func autoServe() {
 			}
 			go handleConnection(conn)
 		}
-	}()
+	}(autoServeStop)
 }
 
 func Close() {
 	autoServeMu.Lock()
 	l := autoListener
+	stop := autoServeStop
 	autoListener = nil
+	autoServeStop = nil
 	autoServeDone = false
 	autoServeMu.Unlock()
 	if l != nil {
 		l.Close()
+	}
+	if stop != nil {
+		<-stop
 	}
 }
 
@@ -214,4 +222,3 @@ func dispatch(conn net.Conn, msg wireMessage) {
 	}
 	writeFrame(conn, payload)
 }
-
