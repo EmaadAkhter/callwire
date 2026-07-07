@@ -128,6 +128,12 @@ func Serve(addr string) error {
 }
 
 func handleConnection(conn net.Conn) {
+	// Set SO_LINGER=0 so the connection closes with RST instead of FIN/ACK.
+	// This prevents both ends from entering TIME_WAIT, which is critical for
+	// connection-churn scenarios that would otherwise exhaust ephemeral ports.
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetLinger(0)
+	}
 	defer conn.Close()
 	for {
 		payload, err := readFrame(conn)
@@ -140,6 +146,16 @@ func handleConnection(conn net.Conn) {
 		}
 		dispatch(conn, msg)
 	}
+}
+
+// isChannelReturn reports whether the function's first return value is a
+// receive-capable channel (chan T or <-chan T).
+func isChannelReturn(fnType reflect.Type) bool {
+	if fnType.NumOut() == 0 {
+		return false
+	}
+	k := fnType.Out(0).Kind()
+	return k == reflect.Chan
 }
 
 func dispatch(conn net.Conn, msg wireMessage) {
@@ -201,6 +217,12 @@ func dispatch(conn net.Conn, msg wireMessage) {
 
 	results := fnValue.Call(in)
 
+	// If the first return value is a channel, stream its elements.
+	if len(results) >= 1 && isChannelReturn(fnType) {
+		dispatchStream(conn, msg.ID, fnType, results)
+		return
+	}
+
 	if results == nil {
 		payload, _ := encodeResponse(msg.ID, nil)
 		writeFrame(conn, payload)
@@ -235,6 +257,53 @@ func dispatch(conn net.Conn, msg wireMessage) {
 		writeFrame(conn, payload)
 		return
 	}
+	writeFrame(conn, payload)
+}
+
+// dispatchStream reads from a channel return value and sends stream_chunk /
+// stream_end frames. If there is a second (error) return value it is checked
+// after the channel closes.
+func dispatchStream(conn net.Conn, id uint64, fnType reflect.Type, results []reflect.Value) {
+	chanVal := results[0]
+	var errVal reflect.Value
+	if len(results) == 2 {
+		errVal = results[1]
+	}
+
+	// If the function itself returned an error upfront (second return value is
+	// non-nil), report it before streaming.
+	if errVal.IsValid() {
+		if err, ok := errVal.Interface().(error); ok && err != nil {
+			errType := "Error"
+			msg := err.Error()
+			if we, ok := err.(*WireError); ok {
+				errType = we.ErrorType
+				msg = we.Message
+			}
+			payload, _ := encodeError(id, errType, msg)
+			writeFrame(conn, payload)
+			return
+		}
+	}
+
+	// Stream channel values until it closes.
+	for {
+		v, open := chanVal.Recv()
+		if !open {
+			break
+		}
+		payload, err := encodeStreamChunk(id, v.Interface())
+		if err != nil {
+			payload, _ = encodeError(id, "InternalError", "failed to encode stream chunk")
+			writeFrame(conn, payload)
+			return
+		}
+		if err := writeFrame(conn, payload); err != nil {
+			return
+		}
+	}
+
+	payload, _ := encodeStreamEnd(id)
 	writeFrame(conn, payload)
 }
 

@@ -20,12 +20,24 @@ func encodeRequest(id uint64, funcName string, args []interface{}) ([]byte, erro
 	return EncodeRequest(id, funcName, args)
 }
 
+func encodeStreamRequest(id uint64, funcName string, args []interface{}) ([]byte, error) {
+	return msgpack.Marshal(wireMessage{ID: id, Type: "stream_request", Func: funcName, Args: args})
+}
+
 func encodeResponse(id uint64, result interface{}) ([]byte, error) {
 	return msgpack.Marshal(wireMessage{ID: id, Type: "response", Result: result})
 }
 
 func encodeError(id uint64, errorType, message string) ([]byte, error) {
 	return msgpack.Marshal(wireMessage{ID: id, Type: "error", ErrorType: errorType, Message: message})
+}
+
+func encodeStreamChunk(id uint64, result interface{}) ([]byte, error) {
+	return msgpack.Marshal(wireMessage{ID: id, Type: "stream_chunk", Result: result})
+}
+
+func encodeStreamEnd(id uint64) ([]byte, error) {
+	return msgpack.Marshal(wireMessage{ID: id, Type: "stream_end"})
 }
 
 func decodeMessage(payload []byte) (wireMessage, error) {

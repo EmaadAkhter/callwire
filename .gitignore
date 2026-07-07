@@ -1,11 +1,71 @@
-# Python
+# ─── Python ───────────────────────────────────────────────────────────────────
 python/.venv/
-__pycache__/
-*.pyc
+python/__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.so
 
-# Go
+# ─── Go ───────────────────────────────────────────────────────────────────────
 go/callwire/all
 go/callwire/httpserver
+# compiled binaries / test output
+*.exe
+*.exe~
+*.test
+*.out
+# vendor (if used)
+vendor/
 
-# OS
+# ─── Rust ─────────────────────────────────────────────────────────────────────
+rust/target/
+**/*.rs.bk
+Cargo.lock          # comment out if this is a binary crate and you want to pin
+
+# ─── TLS test artefacts ───────────────────────────────────────────────────────
+*.pem
+*.crt
+*.key
+*.csr
+*.p12
+*.pfx
+
+# ─── Benchmarks / profiling ───────────────────────────────────────────────────
+benchmarks/results/
+*.prof
+*.cpuprofile
+*.memprofile
+pprof/
+flamegraph*.svg
+*.perf
+
+# ─── Editor / IDE ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+*.iml
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.orig
+.env
+.env.*

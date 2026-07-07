@@ -15,6 +15,14 @@ def pack_error(id: int, error_type: str, message: str) -> bytes:
     )
 
 
+def pack_stream_chunk(id: int, result) -> bytes:
+    return msgpack.packb({"id": id, "type": "stream_chunk", "result": result})
+
+
+def pack_stream_end(id: int) -> bytes:
+    return msgpack.packb({"id": id, "type": "stream_end"})
+
+
 def unpack(payload: bytes) -> dict:
     # raw=False decodes str properly — don't drop this flag
     #

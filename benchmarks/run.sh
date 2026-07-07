@@ -34,7 +34,7 @@ echo ""
 echo "=== Phase 1: Microbenchmarks ==="
 (
     cd "$GO_DIR"
-    go test -bench='Benchmark(Encode|Decode|Dispatch|Framing|Allocations|EncodeResponse)' \
+    go test -run='^$' -bench='Benchmark(Encode|Decode|Dispatch|Framing|Allocations|EncodeResponse)' \
         -benchtime=3s -count=3 -benchmem 2>&1
 ) | tee "$RESULTS_DIR/phase1_micro.txt"
 
@@ -45,13 +45,13 @@ echo "=== Phase 2: Point-to-Point Latency ==="
 (
     cd "$GO_DIR"
     # Go→Go latency
-    go test -bench='BenchmarkLatencyGoToGo' -benchtime=5s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkLatencyGoToGo' -benchtime=5s -count=3 -benchmem 2>&1
     echo "---"
     # Go→Py latency (starts Python server)
-    go test -bench='BenchmarkLatencyGoToPy' -benchtime=3s -count=1 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkLatencyGoToPy' -benchtime=3s -count=1 -benchmem 2>&1
     echo "---"
     # Latency distribution
-    go test -bench='BenchmarkLatencyDistribution' -benchtime=10s -count=1 2>&1
+    go test -run='^$' -bench='BenchmarkLatencyDistribution' -benchtime=10s -count=1 2>&1
 ) | tee "$RESULTS_DIR/phase2_latency.txt"
 
 echo ""
@@ -60,13 +60,13 @@ echo ""
 echo "=== Phase 3: Throughput & Concurrency ==="
 (
     cd "$GO_DIR"
-    go test -bench='BenchmarkThroughputConcurrency' -benchtime=10s -count=3 2>&1
+    go test -run='^$' -bench='BenchmarkThroughputConcurrency' -benchtime=10s -count=3 2>&1
     echo "---"
-    go test -bench='BenchmarkSharedConnVsMultiConn' -benchtime=10s -count=3 2>&1
+    go test -run='^$' -bench='BenchmarkSharedConnVsMultiConn' -benchtime=10s -count=3 2>&1
     echo "---"
-    go test -bench='BenchmarkHeadOfLineBlocking' -benchtime=5s -count=3 2>&1
+    go test -run='^$' -bench='BenchmarkHeadOfLineBlocking' -benchtime=5s -count=3 2>&1
     echo "---"
-    go test -bench='BenchmarkFuncComplexity' -benchtime=5s -count=3 2>&1
+    go test -run='^$' -bench='BenchmarkFuncComplexity' -benchtime=5s -count=3 2>&1
 ) | tee "$RESULTS_DIR/phase3_throughput.txt"
 
 echo ""
@@ -75,15 +75,15 @@ echo ""
 echo "=== Phase 4: Payload & Argument ==="
 (
     cd "$GO_DIR"
-    go test -bench='BenchmarkArgCount' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkArgCount' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkResultSize' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkResultSize' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkStructRoundTrip' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkStructRoundTrip' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkStringSize' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkStringSize' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkNestedData' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkNestedData' -benchtime=3s -count=3 -benchmem 2>&1
 ) | tee "$RESULTS_DIR/phase4_payload.txt"
 
 echo ""
@@ -92,20 +92,23 @@ echo ""
 echo "=== Phase 5: Resource & Stability ==="
 (
     cd "$GO_DIR"
-    go test -bench='BenchmarkConnChurn' -benchtime=3s -count=3 -benchmem 2>&1
+    # ConnChurn and MemPerConn use count=1; the server sets SO_LINGER=0 so
+    # connections close with RST (no TIME_WAIT), keeping ephemeral ports free.
+    go test -run='^$' -bench='BenchmarkConnChurn' -benchtime=3s -count=1 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkRegistrySize' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkRegistrySize' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkRefWrapper' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkRefWrapper' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkRefSeamless' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkRefSeamless' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkGoroutineCount' -benchtime=3s -count=3 2>&1
+    go test -run='^$' -bench='BenchmarkGoroutineCount' -benchtime=3s -count=3 2>&1
     echo "---"
-    go test -bench='BenchmarkPythonVsGoReflection' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkPythonVsGoReflection' -benchtime=3s -count=3 -benchmem 2>&1
     echo "---"
-    go test -bench='BenchmarkMemPerConn' -benchtime=3s -count=3 -benchmem 2>&1
+    go test -run='^$' -bench='BenchmarkMemPerConn' -benchtime=3s -count=1 -benchmem 2>&1
 ) | tee "$RESULTS_DIR/phase5_resource.txt"
+
 
 echo ""
 
