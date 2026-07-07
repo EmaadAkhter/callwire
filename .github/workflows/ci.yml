@@ -64,6 +64,7 @@ jobs:
           python test_streaming.py
           python test_batch.py
           python test_registry.py
+          python test_tls.py
 
   rust-tests:
     name: Rust Unit & Integration Tests
@@ -78,3 +79,24 @@ jobs:
         run: |
           cd rust
           cargo test -- --nocapture
+
+  typescript-tests:
+    name: TypeScript Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd ts
+          npm install
+
+      - name: Run TypeScript tests
+        run: |
+          cd ts
+          npm test

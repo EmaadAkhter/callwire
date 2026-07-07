@@ -41,17 +41,35 @@ pub async fn serve_registry(addr: &str) -> Result<ServerHandle> {
     // We register the unary RPC endpoints on the registry.
     // To keep it simple and match Go/Python, we can register them as "register" and "discover".
     let reg_clone = reg.clone();
-    crate::server::register_unary("register", move |(service_name, addr): (String, String)| {
+    crate::server::register_unary("callwire.register", move |(service_name, addr): (String, String)| {
         reg_clone.register(service_name, addr)
     });
 
     let reg_clone = reg.clone();
-    crate::server::register_unary("discover", move |(service_name,): (String,)| {
+    crate::server::register_unary("callwire.discover", move |(service_name,): (String,)| {
         reg_clone.discover(service_name)
     });
 
     serve_on(addr).await
 }
+
+/// Register `callwire.register` and `callwire.discover` into the global
+/// REGISTRY so an existing server socket can handle them.  Used by the
+/// orchestrator which manages the socket itself.
+pub(crate) async fn start_embedded_registry() {
+    let reg = Arc::new(RegistryServer::new());
+
+    let reg_clone = reg.clone();
+    crate::server::register_unary("callwire.register", move |(service_name, addr): (String, String)| {
+        reg_clone.register(service_name, addr)
+    });
+
+    let reg_clone = reg.clone();
+    crate::server::register_unary("callwire.discover", move |(service_name,): (String,)| {
+        reg_clone.discover(service_name)
+    });
+}
+
 
 pub struct DiscoverPool {
     registry_addr: String,
@@ -72,7 +90,7 @@ impl DiscoverPool {
 
     pub async fn refresh(&self) -> Result<()> {
         let reg_client = Client::connect(&self.registry_addr).await?;
-        let addrs: Vec<String> = reg_client.import("discover", &(self.service_name.clone(),)).await?;
+        let addrs: Vec<String> = reg_client.import("callwire.discover", &(self.service_name.clone(),)).await?;
         
         let mut new_clients = Vec::new();
         for addr in addrs {

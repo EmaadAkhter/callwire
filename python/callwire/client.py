@@ -58,11 +58,17 @@ class Client:
         self._reader_thread = None
         self._connected = False
         self._conn_lock = threading.Lock()
+        
+        # Routing client extensions
+        self._is_registry = False
+        self._worker_clients = {}
+        self._route_cache = {}
 
-    def connect(self, host="localhost", port=9090, tls=None):
+    def connect(self, host="localhost", port=9090, tls=None, is_registry=False):
         self._host = host
         self._port = port
         self._tls = tls
+        self._is_registry = is_registry
         self.conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.conn.connect((host, port))
         if tls:
@@ -112,6 +118,13 @@ class Client:
             and self._reader_thread is not threading.current_thread()
         ):
             self._reader_thread.join(timeout=2)
+        # Close any dynamically connected workers
+        for wc in list(self._worker_clients.values()):
+            try:
+                wc.close()
+            except Exception:
+                pass
+        self._worker_clients.clear()
 
     def _drain_pending(self):
         """Push a sentinel DONE into all pending queues so waiters unblock."""
@@ -153,7 +166,7 @@ class Client:
             while self._connected:
                 try:
                     payload = read_frame(self.conn)
-                except ConnectionError:
+                except OSError:
                     if self._reconnect and self._connected:
                         self._drain_pending()
                         self._reconnect_loop()
@@ -186,8 +199,37 @@ class Client:
             self._next_id += 1
             return self._next_id
 
+    def _resolve_worker(self, func: str):
+        if not self._is_registry:
+            return None
+        
+        # Don't route internal registry calls
+        if func.startswith("callwire."):
+            return None
+
+        addr = self._route_cache.get(func)
+        if not addr:
+            # Query the registry for this function's location
+            addrs = self.call("callwire.discover", [func])
+            if not addrs or not isinstance(addrs, list):
+                raise CallwireError("NotFoundError", f"function '{func}' not found in registry")
+            addr = addrs[0]
+            self._route_cache[func] = addr
+
+        if addr not in self._worker_clients:
+            host, port_str = addr.split(":")
+            wc = Client(reconnect=self._reconnect)
+            wc.connect(host, int(port_str), tls=self._tls)
+            self._worker_clients[addr] = wc
+        
+        return self._worker_clients[addr]
+
     def call(self, func: str, args: list):
         """Make a unary (request/response) call and return the result."""
+        worker = self._resolve_worker(func)
+        if worker:
+            return worker.call(func, args)
+
         if not self._connected:
             raise ConnectionError("not connected")
         id_ = self._next_request_id()
@@ -213,7 +255,7 @@ class Client:
         msg = val
         if msg["type"] == "error":
             raise CallwireError(msg["error_type"], msg["message"])
-        return msg["result"]
+        return msg.get("result")
 
     def batch(self, calls: list):
         """
@@ -221,6 +263,23 @@ class Client:
         calls: list of (func_name, args)
         Returns: list of results. Raises CallwireError if any call fails.
         """
+        if self._is_registry:
+            # Group calls by target worker
+            worker_calls = {}
+            results = [None] * len(calls)
+            for idx, (func, args) in enumerate(calls):
+                worker = self._resolve_worker(func)
+                if not worker:
+                    raise ConnectionError("routing resolved to empty worker")
+                worker_calls.setdefault(worker, []).append((idx, func, args))
+
+            for worker, items in worker_calls.items():
+                batch_payload = [(func, args) for _, func, args in items]
+                batch_res = worker.batch(batch_payload)
+                for (original_idx, _, _), val in zip(items, batch_res):
+                    results[original_idx] = val
+            return results
+
         if not self._connected:
             raise ConnectionError("not connected")
 
@@ -250,22 +309,18 @@ class Client:
                 raise ConnectionError("connection closed while waiting for response")
             if val["type"] == "error":
                 raise CallwireError(val["error_type"], val["message"])
-            results.append(val["result"])
+            results.append(val.get("result"))
         return results
 
     def call_stream(self, func: str, args: list, timeout: float = 30.0):
         """
         Call a streaming server function and yield each chunk as it arrives.
-
-        Raises ``CallwireError`` if the server returns an error frame.
-        Raises ``ConnectionError`` if the connection drops mid-stream.
-        Raises ``TimeoutError`` if no chunk is received within `timeout` seconds.
-
-        Usage::
-
-            for chunk in client.call_stream("count_to", [5]):
-                print(chunk)
         """
+        worker = self._resolve_worker(func)
+        if worker:
+            yield from worker.call_stream(func, args, timeout=timeout)
+            return
+
         if not self._connected:
             raise ConnectionError("not connected")
         id_ = self._next_request_id()
@@ -294,7 +349,7 @@ class Client:
             msg_type = msg.get("type", "")
 
             if msg_type == "stream_chunk":
-                yield msg["result"]
+                yield msg.get("result")
             elif msg_type == "stream_end":
                 return
             elif msg_type == "error":
@@ -302,3 +357,12 @@ class Client:
             else:
                 # Unexpected frame type — treat as end-of-stream.
                 return
+
+    def ref(self, func: str):
+        """Bind a remote function once and return a reusable callable function."""
+        return lambda *args: self.call(func, list(args))
+
+    def ref_stream(self, func: str):
+        """Bind a remote streaming function once and return a reusable generator-maker."""
+        return lambda *args: self.call_stream(func, list(args))
+

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "callwire"
+version = "2.0.0"
+description = "High-performance bidirectional RPC over TCP with MessagePack framing — Go, Python, Rust interop"
+readme = "../README.md"
+license = { file = "../LICENSE" }
+authors = [{ name = "Emaad Akhter" }]
+requires-python = ">=3.10"
+keywords = ["rpc", "msgpack", "ipc", "tcp", "tls", "grpc-alternative"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "msgpack>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/emaad/callwire"
+Documentation = "https://github.com/emaad/callwire/blob/main/SPEC.md"
+"Bug Tracker" = "https://github.com/emaad/callwire/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["callwire"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "callwire/",
+    "../README.md",
+    "../LICENSE",
+    "../SPEC.md",
+]

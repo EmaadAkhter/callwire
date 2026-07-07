@@ -19,11 +19,11 @@ struct InferResponse {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: cross_lang_client <addr>");
-        std::process::exit(1);
-    }
-    let addr = &args[1];
+    let addr = if args.len() < 2 {
+        "localhost:9090"
+    } else {
+        &args[1]
+    };
 
     let client = Client::connect(addr).await.expect("Failed to connect");
 

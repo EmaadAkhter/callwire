@@ -14,7 +14,7 @@ _registry = {}
 _AUTO_CONFIG = {
     "host": os.environ.get("CALLWIRE_HOST", "localhost"),
     "port": int(os.environ.get("CALLWIRE_PORT", "9090")),
-    "auto": os.environ.get("CALLWIRE_AUTO", "1") != "0",
+    "auto": os.environ.get("CALLWIRE_AUTO", "1") != "0" and os.environ.get("CALLWIRE_SPAWNED") != "1",
 }
 _auto_started = False
 _auto_listener = None

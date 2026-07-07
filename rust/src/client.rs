@@ -10,10 +10,24 @@ use crate::errors::{Error, Result, CallwireError};
 use crate::codec::{pack_request, WireMessage};
 use crate::tls::TlsConfig;
 
+use tokio::sync::Mutex as TokioMutex;
+
 #[derive(Clone)]
 pub struct Client {
-    tx: mpsc::Sender<ActorCommand>,
-    next_id: Arc<AtomicU64>,
+    inner: Arc<ClientInner>,
+}
+
+enum ClientInner {
+    Direct {
+        tx: mpsc::Sender<ActorCommand>,
+        next_id: Arc<AtomicU64>,
+    },
+    Routing {
+        registry_client: Box<Client>,
+        route_cache: TokioMutex<HashMap<String, String>>,
+        worker_clients: TokioMutex<HashMap<String, Client>>,
+        reconnect: bool,
+    },
 }
 
 enum ActorCommand {
@@ -68,8 +82,10 @@ impl Client {
         tokio::spawn(run_actor(addr, reconnect, stream, rx));
         
         Ok(Self {
-            tx,
-            next_id: Arc::new(AtomicU64::new(0)),
+            inner: Arc::new(ClientInner::Direct {
+                tx,
+                next_id: Arc::new(AtomicU64::new(0)),
+            })
         })
     }
 
@@ -81,9 +97,76 @@ impl Client {
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(run_tls_actor(addr, cfg, reconnect, stream, rx));
         Ok(Self {
-            tx,
-            next_id: Arc::new(AtomicU64::new(0)),
+            inner: Arc::new(ClientInner::Direct {
+                tx,
+                next_id: Arc::new(AtomicU64::new(0)),
+            })
         })
+    }
+
+    pub async fn connect_registry<A: AsRef<str>>(addr: A) -> Result<Self> {
+        Self::connect_registry_impl(addr.as_ref().to_string(), false).await
+    }
+
+    pub async fn connect_registry_with_reconnect<A: AsRef<str>>(addr: A) -> Result<Self> {
+        Self::connect_registry_impl(addr.as_ref().to_string(), true).await
+    }
+
+    async fn connect_registry_impl(addr: String, reconnect: bool) -> Result<Self> {
+        let registry_client = if reconnect {
+            Self::connect_with_reconnect(&addr).await?
+        } else {
+            Self::connect(&addr).await?
+        };
+        Ok(Self {
+            inner: Arc::new(ClientInner::Routing {
+                registry_client: Box::new(registry_client),
+                route_cache: TokioMutex::new(HashMap::new()),
+                worker_clients: TokioMutex::new(HashMap::new()),
+                reconnect,
+            })
+        })
+    }
+
+    fn resolve_worker<'a>(&'a self, func_name: &'a str) -> futures_util::future::BoxFuture<'a, Result<Option<Self>>> {
+        use futures_util::FutureExt;
+        async move {
+            match &*self.inner {
+                ClientInner::Direct { .. } => Ok(None),
+                ClientInner::Routing { registry_client, route_cache, worker_clients, reconnect } => {
+                    if func_name.starts_with("callwire.") {
+                        return Ok(None);
+                    }
+                    
+                    let mut cache = route_cache.lock().await;
+                    let addr = if let Some(addr) = cache.get(func_name) {
+                        addr.clone()
+                    } else {
+                        let addrs: Vec<String> = registry_client.import("callwire.discover", &(func_name.to_string(),)).await?;
+                        if addrs.is_empty() {
+                            return Err(Error::Remote(CallwireError {
+                                error_type: "NotFoundError".to_string(),
+                                message: format!("function '{}' not registered", func_name),
+                            }));
+                        }
+                        let addr = addrs[0].clone();
+                        cache.insert(func_name.to_string(), addr.clone());
+                        addr
+                    };
+
+                    let mut workers = worker_clients.lock().await;
+                    if !workers.contains_key(&addr) {
+                        let client = if *reconnect {
+                            Client::connect_with_reconnect(&addr).await?
+                        } else {
+                            Client::connect(&addr).await?
+                        };
+                        workers.insert(addr.clone(), client);
+                    }
+                    Ok(Some(workers.get(&addr).unwrap().clone()))
+                }
+            }
+        }.boxed()
     }
 
     pub async fn import<Resp, Args>(&self, func_name: &str, args: &Args) -> Result<Resp>
@@ -91,11 +174,28 @@ impl Client {
         Resp: DeserializeOwned,
         Args: Serialize,
     {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(worker) = self.resolve_worker(func_name).await? {
+            worker.import_direct(func_name, args).await
+        } else {
+            self.import_direct(func_name, args).await
+        }
+    }
+
+    pub(crate) async fn import_direct<Resp, Args>(&self, func_name: &str, args: &Args) -> Result<Resp>
+    where
+        Resp: DeserializeOwned,
+        Args: Serialize,
+    {
+        let (tx, next_id) = match &*self.inner {
+            ClientInner::Direct { tx, next_id } => (tx, next_id),
+            _ => unreachable!(),
+        };
+
+        let id = next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let payload = pack_request(id, func_name, args)?;
-        let (tx, rx) = oneshot::channel();
+        let (otx, rx) = oneshot::channel();
         
-        self.tx.send(ActorCommand::Call { id, payload, tx }).await
+        tx.send(ActorCommand::Call { id, payload, tx: otx }).await
             .map_err(|_| Error::ConnectionClosed)?;
             
         let msg = rx.await.map_err(|_| Error::ConnectionClosed)??;
@@ -120,11 +220,28 @@ impl Client {
         Resp: DeserializeOwned + Unpin,
         Args: Serialize,
     {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(worker) = self.resolve_worker(func_name).await? {
+            worker.import_stream_direct(func_name, args).await
+        } else {
+            self.import_stream_direct(func_name, args).await
+        }
+    }
+
+    pub(crate) async fn import_stream_direct<Resp, Args>(&self, func_name: &str, args: &Args) -> Result<CallwireStream<Resp>>
+    where
+        Resp: DeserializeOwned + Unpin,
+        Args: Serialize,
+    {
+        let (tx, next_id) = match &*self.inner {
+            ClientInner::Direct { tx, next_id } => (tx, next_id),
+            _ => unreachable!(),
+        };
+
+        let id = next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let payload = pack_request(id, func_name, args)?;
-        let (tx, rx) = mpsc::channel(256);
+        let (otx, rx) = mpsc::channel(256);
         
-        self.tx.send(ActorCommand::CallStream { id, payload, tx }).await
+        tx.send(ActorCommand::CallStream { id, payload, tx: otx }).await
             .map_err(|_| Error::ConnectionClosed)?;
             
         Ok(CallwireStream {

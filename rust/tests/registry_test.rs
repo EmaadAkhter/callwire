@@ -19,7 +19,7 @@ async fn test_rust_registry_discovery() {
 
     // Register worker
     let reg_client = Client::connect("127.0.0.1:29090").await.expect("failed to connect to registry");
-    let _: () = reg_client.import("register", &("test-service".to_string(), "127.0.0.1:29091".to_string())).await.unwrap();
+    let _: () = reg_client.import("callwire.register", &("test-service".to_string(), "127.0.0.1:29091".to_string())).await.unwrap();
 
     // Discover and call
     let pool = DiscoverPool::new("127.0.0.1:29090", "test-service").await.expect("failed to create pool");

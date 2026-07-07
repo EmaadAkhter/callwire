@@ -171,7 +171,9 @@ fn spawn_auto_serve_if_idle() {
         // Already running.
         return;
     }
-    if std::env::var("CALLWIRE_AUTO").unwrap_or_default() == "0" {
+    if std::env::var("CALLWIRE_AUTO").unwrap_or_default() == "0"
+        || std::env::var("CALLWIRE_SPAWNED").as_deref() == Ok("1")
+    {
         return;
     }
 
@@ -183,16 +185,39 @@ fn spawn_auto_serve_if_idle() {
     *tx_guard = Some(tx);
     drop(tx_guard); // Release lock before spawning.
 
-    tokio::spawn(async move {
-        let listener = match TcpListener::bind(&addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("callwire: auto-serve on {} failed to bind: {}", addr, e);
-                return;
-            }
-        };
-        run_accept_loop(listener, rx).await;
-    });
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                let listener = match TcpListener::bind(&addr).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("callwire: auto-serve on {} failed to bind: {}", addr, e);
+                        return;
+                    }
+                };
+                run_accept_loop(listener, rx).await;
+            });
+        }
+        Err(_) => {
+            // Spawn a background OS thread with its own Tokio runtime if no global runtime exists.
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let listener = match TcpListener::bind(&addr).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            eprintln!("callwire: auto-serve on {} failed to bind: {}", addr, e);
+                            return;
+                        }
+                    };
+                    run_accept_loop(listener, rx).await;
+                });
+            });
+        }
+    }
 }
 
 /// Start the auto-serve server and wait until the TCP listener is bound.
@@ -272,7 +297,7 @@ pub async fn serve<A: tokio::net::ToSocketAddrs>(addr: A) -> Result<()> {
     Ok(())
 }
 
-async fn run_accept_loop(listener: TcpListener, mut rx: tokio::sync::watch::Receiver<bool>) {
+pub(crate) async fn run_accept_loop(listener: TcpListener, mut rx: tokio::sync::watch::Receiver<bool>) {
     loop {
         tokio::select! {
             res = listener.accept() => {

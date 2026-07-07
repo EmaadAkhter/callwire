@@ -63,7 +63,7 @@ func autoServe() {
 	if autoServeDone {
 		return
 	}
-	if os.Getenv("CALLWIRE_AUTO") == "0" {
+	if os.Getenv("CALLWIRE_AUTO") == "0" || os.Getenv("CALLWIRE_SPAWNED") == "1" {
 		autoServeDone = true
 		return
 	}
