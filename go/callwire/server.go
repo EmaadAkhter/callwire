@@ -1,6 +1,7 @@
 package callwire
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"sync"
 )
+
+var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
 var (
 	registry      = map[string]interface{}{}
@@ -17,6 +20,18 @@ var (
 )
 
 func Export(name string, fn interface{}) {
+	fnType := reflect.TypeOf(fn)
+	if fnType.Kind() != reflect.Func {
+		panic(fmt.Sprintf("callwire: Export(%q) requires a function, got %T", name, fn))
+	}
+	switch n := fnType.NumOut(); {
+	case n > 2:
+		panic(fmt.Sprintf("callwire: exported %q has %d return values; at most 2 (value, error) supported", name, n))
+	case n == 2:
+		if !fnType.Out(1).Implements(errorType) {
+			panic(fmt.Sprintf("callwire: exported %q has 2 returns but second is %s, not error", name, fnType.Out(1)))
+		}
+	}
 	registryMu.Lock()
 	registry[name] = fn
 	registryMu.Unlock()
@@ -33,15 +48,15 @@ func autoServe() {
 		autoServeDone = true
 		return
 	}
+	addr := net.JoinHostPort(defaultHost, strconv.Itoa(defaultPort))
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("callwire: auto-serve on %s failed: %v", addr, err)
+		return
+	}
+	autoServeDone = true
+	log.Printf("callwire: auto-serving on %s", addr)
 	go func() {
-		addr := net.JoinHostPort(defaultHost, strconv.Itoa(defaultPort))
-		listener, err := net.Listen("tcp", addr)
-		if err != nil {
-			log.Printf("callwire: auto-serve on %s failed: %v", addr, err)
-			return
-		}
-		autoServeDone = true
-		log.Printf("callwire: auto-serving on %s", addr)
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
@@ -109,7 +124,7 @@ func dispatch(conn net.Conn, msg wireMessage) {
 	}
 
 	if len(args) != fnType.NumIn() {
-		payload, _ := encodeError(msg.ID, "TypeError", "expected "+itoa(fnType.NumIn())+" args, got "+itoa(len(args)))
+		payload, _ := encodeError(msg.ID, "TypeError", "expected "+strconv.Itoa(fnType.NumIn())+" args, got "+strconv.Itoa(len(args)))
 		writeFrame(conn, payload)
 		return
 	}
@@ -169,14 +184,4 @@ func dispatch(conn net.Conn, msg wireMessage) {
 	writeFrame(conn, payload)
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
-}
+
