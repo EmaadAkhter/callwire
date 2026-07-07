@@ -1,10 +1,12 @@
 import atexit
+import inspect
 import os
 import socket
+import ssl
 import threading
 
 from .framing import read_frame, write_frame
-from .codec import pack_response, pack_error, unpack
+from .codec import pack_response, pack_error, pack_stream_chunk, pack_stream_end, unpack
 from .errors import exception_to_wire
 
 _registry = {}
@@ -74,7 +76,18 @@ def _auto_serve_loop(listener):
         pass
 
 
-def serve(host="localhost", port=9090):
+def serve(host="localhost", port=9090, tls=None):
+    """Start the callwire server, blocking until shutdown.
+
+    Args:
+        host: bind address (default "localhost").
+        port: bind port (default 9090).
+        tls: optional dict with keys:
+            - "certfile" (str, required): path to PEM server certificate.
+            - "keyfile"  (str, required): path to PEM private key.
+            - "cafile"   (str, optional): path to PEM CA cert; if given,
+              client certificates are required (mTLS).
+    """
     global _auto_listener, _auto_started
     if _auto_listener is not None:
         if host == _AUTO_CONFIG["host"] and port == _AUTO_CONFIG["port"]:
@@ -82,7 +95,7 @@ def serve(host="localhost", port=9090):
         _auto_listener.close()
         _auto_listener = None
         _auto_started = False
-    _start_listener(host, port)
+    _start_listener(host, port, tls=tls)
     while True:
         try:
             conn, _ = _auto_listener.accept()
@@ -91,15 +104,28 @@ def serve(host="localhost", port=9090):
             break
 
 
-def _start_listener(host, port):
+def _start_listener(host, port, tls=None):
     global _auto_listener, _auto_started
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind((host, port))
-    listener.listen()
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    raw.bind((host, port))
+    raw.listen()
+    if tls is not None:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(
+            certfile=tls["certfile"],
+            keyfile=tls.get("keyfile"),
+        )
+        if tls.get("cafile"):
+            ctx.load_verify_locations(cafile=tls["cafile"])
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        listener = ctx.wrap_socket(raw, server_side=True)
+    else:
+        listener = raw
     _auto_listener = listener
     _auto_started = True
-    print(f"callwire: listening on {host}:{port}")
+    scheme = "TLS" if tls else "plain"
+    print(f"callwire: listening on {host}:{port} ({scheme})")
 
 
 def _handle_connection(conn):
@@ -124,9 +150,22 @@ def _dispatch(conn, msg):
             conn, pack_error(id_, "NotFoundError", f"function '{func_name}' not exported")
         )
         return
+    fn = _registry[func_name]
     try:
-        result = _registry[func_name](*args)
-        write_frame(conn, pack_response(id_, result))
+        if inspect.isgeneratorfunction(fn):
+            # Stream: send one stream_chunk per yielded value, then stream_end.
+            gen = fn(*args)
+            try:
+                for value in gen:
+                    write_frame(conn, pack_stream_chunk(id_, value))
+            except Exception as e:
+                error_type, message = exception_to_wire(e)
+                write_frame(conn, pack_error(id_, error_type, message))
+                return
+            write_frame(conn, pack_stream_end(id_))
+        else:
+            result = fn(*args)
+            write_frame(conn, pack_response(id_, result))
     except Exception as e:
         error_type, message = exception_to_wire(e)
         write_frame(conn, pack_error(id_, error_type, message))

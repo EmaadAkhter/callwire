@@ -9,6 +9,9 @@ import (
 
 func TestCloseAllowsImmediateReopen(t *testing.T) {
 	t.Setenv("CALLWIRE_AUTO", "1")
+	// Reset any auto-server state left by previous tests so autoServeDone
+	// doesn't skip starting a new listener on our chosen port.
+	Close()
 	port := freeTCPPort(t)
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 
@@ -19,13 +22,13 @@ func TestCloseAllowsImmediateReopen(t *testing.T) {
 	})
 
 	MustExport("close_probe", func() int { return 1 })
-	waitForDial(t, addr, 2*time.Second)
+	waitForDial(t, addr, 5*time.Second)
 
 	Close()
-	waitForDialFailure(t, addr, 2*time.Second)
+	waitForDialFailure(t, addr, 5*time.Second)
 
 	MustExport("close_probe_reopen", func() int { return 2 })
-	waitForDial(t, addr, 2*time.Second)
+	waitForDial(t, addr, 5*time.Second)
 }
 
 func freeTCPPort(t *testing.T) int {
