@@ -156,7 +156,11 @@ def slow_add(a, b):
 	}
 	t.Cleanup(func() { client.Close() })
 
-	results := make(chan struct{ id int; val int; err error }, 10)
+	results := make(chan struct {
+		id  int
+		val int
+		err error
+	}, 10)
 	for i := 0; i < 10; i++ {
 		i := i
 		go func() {
@@ -273,6 +277,66 @@ c.close()
 		t.Fatalf("expected error, got: %s", output)
 	}
 	t.Log("SUCCESS: Python→Go works")
+}
+
+func TestPythonToGoCompositeArgs(t *testing.T) {
+	type inferRequest struct {
+		Name  string  `msgpack:"name"`
+		Scale float64 `msgpack:"scale"`
+	}
+
+	MustExport("infer_score", func(req inferRequest, tensor []float64) map[string]interface{} {
+		sum := 0.0
+		for _, v := range tensor {
+			sum += v
+		}
+		return map[string]interface{}{
+			"name":  req.Name,
+			"score": sum * req.Scale,
+			"count": len(tensor),
+		}
+	})
+
+	go Serve("localhost:9297")
+	waitForPort(t, "9297", 5*time.Second)
+
+	pyCode := `
+import sys
+sys.path.insert(0, %q)
+
+from callwire import Client
+
+c = Client()
+c.connect("localhost", 9297)
+
+result = c.call("infer_score", [{"name": "demo", "scale": 0.5}, [1.0, 2.0, 3.0, 4.0]])
+print("NAME:" + str(result.get("name")))
+print("COUNT:" + str(result.get("count")))
+print("SCORE:" + str(result.get("score")))
+
+c.close()
+`
+	_, filename, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(filename), "..", "..")
+	pyBin := filepath.Join("..", "..", "python", ".venv", "bin", "python")
+	code := fmt.Sprintf(pyCode, filepath.Join(repoRoot, "python"))
+	cmd := exec.Command(pyBin, "-c", code)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("python client failed: %v\n%s", err, out)
+	}
+
+	output := string(out)
+	if !contains(output, "NAME:demo") {
+		t.Fatalf("expected NAME:demo, got: %s", output)
+	}
+	if !contains(output, "COUNT:4") {
+		t.Fatalf("expected COUNT:4, got: %s", output)
+	}
+	if !contains(output, "SCORE:5.0") {
+		t.Fatalf("expected SCORE:5.0, got: %s", output)
+	}
+	t.Log("SUCCESS: Python→Go composite args (struct + []float64) work")
 }
 
 // ── Python→Python integration ──────────────────────────────────────

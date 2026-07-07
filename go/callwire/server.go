@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
@@ -111,10 +113,14 @@ func Serve(addr string) error {
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
 	log.Printf("callwire serving on %s", addr)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			continue
 		}
 		go handleConnection(conn)
@@ -176,12 +182,21 @@ func dispatch(conn net.Conn, msg wireMessage) {
 			in[i] = reflect.Zero(paramType)
 			continue
 		}
-		if argValue.Type() != paramType {
-			if argValue.Type().ConvertibleTo(paramType) {
-				argValue = argValue.Convert(paramType)
-			}
+		if argValue.Type().AssignableTo(paramType) {
+			in[i] = argValue
+			continue
 		}
-		in[i] = argValue
+		if argValue.Type().ConvertibleTo(paramType) {
+			in[i] = argValue.Convert(paramType)
+			continue
+		}
+		converted, err := decodeIntoParamType(arg, paramType)
+		if err != nil {
+			payload, _ := encodeError(msg.ID, "TypeError", "arg "+strconv.Itoa(i+1)+" conversion failed: "+err.Error())
+			writeFrame(conn, payload)
+			return
+		}
+		in[i] = converted
 	}
 
 	results := fnValue.Call(in)
@@ -221,4 +236,16 @@ func dispatch(conn net.Conn, msg wireMessage) {
 		return
 	}
 	writeFrame(conn, payload)
+}
+
+func decodeIntoParamType(arg interface{}, paramType reflect.Type) (reflect.Value, error) {
+	raw, err := msgpack.Marshal(arg)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	dst := reflect.New(paramType)
+	if err := msgpack.Unmarshal(raw, dst.Interface()); err != nil {
+		return reflect.Value{}, err
+	}
+	return dst.Elem(), nil
 }
