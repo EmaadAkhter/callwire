@@ -7,47 +7,48 @@ on:
     branches: [ main, master ]
 
 jobs:
-  go-tests:
+  integration-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-      - name: Run Go tests
-        run: |
-          cd go/callwire
-          go test -v ./...
 
-  python-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install msgpack
-      - name: Run Python tests
-        run: |
-          cd python
-          python test_self.py
-          python test_smoke.py
-          python test_client.py
-          python test_streaming.py
-          python test_batch.py
-          python test_registry.py
 
-  rust-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # The Go integration tests expect the Python virtualenv at python/.venv/bin/python
+      - name: Setup Python Virtual Environment
+        run: |
+          cd python
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install msgpack
+
+      # Run all test suites
+      - name: Run Go tests (including Rust & Python integration)
+        run: |
+          cd go/callwire
+          go test -v ./...
+
+      - name: Run Python unit/smoke/batch tests
+        run: |
+          cd python
+          .venv/bin/python test_self.py
+          .venv/bin/python test_smoke.py
+          .venv/bin/python test_client.py
+          .venv/bin/python test_streaming.py
+          .venv/bin/python test_batch.py
+          .venv/bin/python test_registry.py
+
       - name: Run Rust tests
         run: |
           cd rust
