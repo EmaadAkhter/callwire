@@ -1,10 +1,23 @@
 import threading
+import atexit
 
 from .client import Client
 from .server import _AUTO_CONFIG
 
 _cache = {}
 _cache_lock = threading.Lock()
+
+
+def _cleanup_cache():
+    with _cache_lock:
+        for client in _cache.values():
+            try:
+                client.close()
+            except Exception:
+                pass
+        _cache.clear()
+
+atexit.register(_cleanup_cache)
 
 
 def ref(func, host=None, port=None):

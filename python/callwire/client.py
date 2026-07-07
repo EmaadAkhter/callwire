@@ -2,9 +2,12 @@ import queue
 import socket
 import threading
 import time
+import logging
 
 from .framing import read_frame, write_frame
 from .codec import pack_request, unpack
+
+logger = logging.getLogger("callwire.client")
 
 
 class CallwireError(Exception):
@@ -151,7 +154,8 @@ class Client:
                     break
                 try:
                     msg = unpack(payload)
-                except Exception:
+                except Exception as e:
+                    logger.error("Failed to decode callwire frame payload: %s", e)
                     continue
                 msg_id = msg["id"]
                 msg_type = msg.get("type", "")
@@ -194,7 +198,12 @@ class Client:
         with self._write_lock:
             write_frame(self.conn, payload)
 
-        val = q.get()
+        try:
+            val = q.get(timeout=30.0)
+        except queue.Empty:
+            with self._pending_lock:
+                self._pending.pop(id_, None)
+            raise TimeoutError("call timed out waiting for response")
 
         if isinstance(val, _Done):
             raise ConnectionError("connection closed while waiting for response")
@@ -229,7 +238,12 @@ class Client:
 
         results = []
         for id_, q in qs:
-            val = q.get()
+            try:
+                val = q.get(timeout=30.0)
+            except queue.Empty:
+                with self._pending_lock:
+                    self._pending.pop(id_, None)
+                raise TimeoutError(f"batch call timed out waiting for response")
             if isinstance(val, _Done):
                 raise ConnectionError("connection closed while waiting for response")
             if val["type"] == "error":
