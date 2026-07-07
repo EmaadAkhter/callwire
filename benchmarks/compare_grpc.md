@@ -8,7 +8,8 @@ All benchmarks: `go test -bench=. -benchtime=1s -benchmem` unless noted.
 
 - Same function (simple arithmetic), same machine, localhost TCP
 - Measure latency (single call, sequential) and throughput (concurrent callers)
-- gRPC numbers from published Go gRPC benchmarks (unary, no streaming) for reference
+- gRPC numbers below are from an in-repo benchmark harness (`grpc_bench_test.go`) run on the same machine and in the same `go test -bench` session as Callwire.
+- Transport is localhost TCP with insecure gRPC credentials (no TLS) to keep transport assumptions comparable.
 - **Callwire client and server both in Go** unless marked "→Python"
 
 ## Microbenchmarks (in-process, no network)
@@ -116,24 +117,24 @@ Per-goroutine connections show similar throughput.
 **Ref[ ] zero-cost abstraction — identical to raw Import.**  
 **Registry lookup is O(1) — no penalty for many exports.**
 
-## Callwire vs gRPC — Comparison
+## Callwire vs gRPC (same machine, same harness)
 
-| Aspect | Callwire (v1) | gRPC (Go) |
-|--------|--------------|-----------|
-| **Serialization** | msgpack (no schema, ~400 ns encode) | protobuf (Go 100-200 ns encode) | protobuf (schema) |
-| **Framing** | Hand-rolled length prefix | HTTP/2 |
-| **Typing** | Runtime assertion / decode | Compile-time generated |
-| **Latency (p50, simple)** | **~30 µs** | ~200-500 µs (gRPC-Go unary) |
-| **Throughput (1 conn)** | **~86K calls/sec** | ~30-50K calls/sec (HTTP/2) |
-| **Throughput (multi-conn)** | **~86K calls/sec** | Scales with HTTP/2 streams |
-| **1MB payload** | **~1 ms** | ~2-5 ms (HTTP/2 framing) |
-| **Memory per call** | **~1.5 KB** | ~2-5 KB (HTTP/2 headers) |
-| **Security** | None (TCP only) | TLS built-in |
-| **Schema validation** | None (runtime) | Compile-time |
-| **Streaming** | Not supported | Bidirectional streaming |
-| **Ecosystem** | None | Rich (auth, interceptors, load balancing) |
+Command used:
 
-**Key takeaway:** Callwire is ~5-10× faster than gRPC for simple unary calls on localhost, at the cost of no TLS, no schema validation, no streaming, and no ecosystem. The overhead gap widens for small payloads and narrows for large payloads.
+```bash
+cd go/callwire
+go test -run '^$' -bench 'Benchmark(LatencyGoToGo|GRPCLatency|ThroughputConcurrency|GRPCThroughputConcurrency)' -benchtime=2s -count=1 .
+```
+
+| Metric | Callwire | gRPC | Relative |
+|--------|----------|------|----------|
+| Latency (noop) | 31.6 µs | 57.2 µs | Callwire ~1.8× faster |
+| Latency (add) | 32.8 µs | 57.0 µs | Callwire ~1.7× faster |
+| Throughput workers=1 | 31.9 µs/op | 57.2 µs/op | Callwire ~1.8× faster |
+| Throughput workers=10 | 12.8 µs/op | 20.2 µs/op | Callwire ~1.6× faster |
+| Throughput workers=100 | 11.1 µs/op | 15.3 µs/op | Callwire ~1.4× faster |
+
+**Key takeaway:** In a controlled same-machine unary benchmark, Callwire is faster for this workload, but by ~1.4–1.8× (not 5–10×). These numbers are specific to localhost, no TLS, and the tested request shapes.
 
 ## Running the benchmarks yourself
 
