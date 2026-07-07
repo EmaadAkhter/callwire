@@ -57,6 +57,7 @@ class Client:
         self._next_id_lock = threading.Lock()
         self._reader_thread = None
         self._connected = False
+        self._conn_lock = threading.Lock()
 
     def connect(self, host="localhost", port=9090, tls=None):
         self._host = host
@@ -82,6 +83,21 @@ class Client:
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
 
+    def _close_conn(self, shutdown=False):
+        """Thread-safe socket closure and connection cleanup."""
+        with self._conn_lock:
+            if self.conn is not None:
+                if shutdown:
+                    try:
+                        self.conn.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                try:
+                    self.conn.close()
+                except OSError:
+                    pass
+                self.conn = None
+
     def close(self):
         self._connected = False
         with self._pending_lock:
@@ -89,16 +105,7 @@ class Client:
             self._pending.clear()
         for q in pending:
             q.put(DONE)
-        if self.conn:
-            try:
-                self.conn.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                self.conn.close()
-            except OSError:
-                pass
-            self.conn = None
+        self._close_conn(shutdown=True)
         if (
             self._reader_thread
             and self._reader_thread.is_alive()
@@ -172,12 +179,7 @@ class Client:
                     q.put(msg)
         finally:
             self._connected = False
-            if self.conn:
-                try:
-                    self.conn.close()
-                except OSError:
-                    pass
-                self.conn = None
+            self._close_conn()
 
     def _next_request_id(self) -> int:
         with self._next_id_lock:
@@ -251,12 +253,13 @@ class Client:
             results.append(val["result"])
         return results
 
-    def call_stream(self, func: str, args: list):
+    def call_stream(self, func: str, args: list, timeout: float = 30.0):
         """
         Call a streaming server function and yield each chunk as it arrives.
 
         Raises ``CallwireError`` if the server returns an error frame.
         Raises ``ConnectionError`` if the connection drops mid-stream.
+        Raises ``TimeoutError`` if no chunk is received within `timeout` seconds.
 
         Usage::
 
@@ -277,7 +280,12 @@ class Client:
             write_frame(self.conn, payload)
 
         while True:
-            val = q.get()
+            try:
+                val = q.get(timeout=timeout)
+            except queue.Empty:
+                with self._pending_lock:
+                    self._pending.pop(id_, None)
+                raise TimeoutError("stream timed out waiting for chunk")
 
             if isinstance(val, _Done):
                 raise ConnectionError("connection closed during stream")
