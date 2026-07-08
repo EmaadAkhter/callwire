@@ -361,6 +361,13 @@ public final class Client: @unchecked Sendable {
 
 public typealias Handler = @Sendable ([Value]) throws -> Value
 
+/// Server-streaming handler: given args, call emit(value) once per chunk.
+public typealias StreamHandler = @Sendable ([Value], @escaping (Value) -> Void) throws -> Void
+/// Client-streaming handler: call recv() until it returns nil (client done), return the single result.
+public typealias ClientStreamHandler = @Sendable (@escaping () -> Value?) throws -> Value
+/// Bidi handler: call recv()/emit() in any order until done.
+public typealias BidiHandler = @Sendable (@escaping () -> Value?, @escaping (Value) -> Void) throws -> Void
+
 /// Callwire server. Registers unary handlers via the C core's userdata-carrying
 /// export (`callwire_server_export_ctx`), same mechanism the C++ SDK uses —
 /// each registration gets its own routed Swift closure, not a shared
@@ -375,6 +382,23 @@ public final class Server: @unchecked Sendable {
         let handler: Handler
         init(_ handler: @escaping Handler) { self.handler = handler }
     }
+
+    private final class StreamHandlerBox {
+        let handler: StreamHandler
+        init(_ handler: @escaping StreamHandler) { self.handler = handler }
+    }
+    private final class ClientStreamHandlerBox {
+        let handler: ClientStreamHandler
+        init(_ handler: @escaping ClientStreamHandler) { self.handler = handler }
+    }
+    private final class BidiHandlerBox {
+        let handler: BidiHandler
+        init(_ handler: @escaping BidiHandler) { self.handler = handler }
+    }
+
+    private var streamBoxes: [StreamHandlerBox] = []
+    private var clientStreamBoxes: [ClientStreamHandlerBox] = []
+    private var bidiBoxes: [BidiHandlerBox] = []
 
     public init(host: String, port: Int32) throws {
         guard let h = callwire_server_new(host, port) else {
@@ -413,6 +437,114 @@ public final class Server: @unchecked Sendable {
             }
         }
         guard rc == 0 else { throw CallwireError(message: "export failed: \(lastError())") }
+    }
+
+    /// Server-streaming: `try server.exportStream("count_to") { args, emit in
+    ///   for i in 1...args[0] { emit(.int64(i)) } }`
+    public func exportStream(_ name: String, handler: @escaping StreamHandler) throws {
+        guard let h = handle else { throw CallwireError(message: "server is closed") }
+        let box = StreamHandlerBox(handler)
+        streamBoxes.append(box)
+
+        let userdata = Unmanaged.passUnretained(box).toOpaque()
+        let rc = callwire_server_export_stream_ctx(h, name, userdata) { userdataRaw, args, argsCount, emit, emitCtx in
+            guard let userdataRaw, let emit else { return -1 }
+            let box = Unmanaged<StreamHandlerBox>.fromOpaque(userdataRaw).takeUnretainedValue()
+
+            var swiftArgs: [Value] = []
+            if let args {
+                for i in 0..<argsCount { swiftArgs.append(decodeValue(args[i])) }
+            }
+
+            let emitFn: (Value) -> Void = { value in
+                var raw = makeRawValue(value)
+                _ = emit(emitCtx, &raw)
+                callwire_value_free(&raw)
+            }
+
+            do {
+                try box.handler(swiftArgs, emitFn)
+                return 0
+            } catch {
+                return -1
+            }
+        }
+        guard rc == 0 else { throw CallwireError(message: "exportStream failed: \(lastError())") }
+    }
+
+    /// Client-streaming: `try server.exportClientStream("sumStream") { recv in
+    ///   var sum: Int64 = 0
+    ///   while let chunk = recv(), case .int64(let v) = chunk { sum += v }
+    ///   return .int64(sum) }`
+    public func exportClientStream(_ name: String, handler: @escaping ClientStreamHandler) throws {
+        guard let h = handle else { throw CallwireError(message: "server is closed") }
+        let box = ClientStreamHandlerBox(handler)
+        clientStreamBoxes.append(box)
+
+        let userdata = Unmanaged.passUnretained(box).toOpaque()
+        let rc = callwire_server_export_client_stream_ctx(h, name, userdata) { userdataRaw, recv, recvCtx, resultOut in
+            guard let userdataRaw, let recv else { return -1 }
+            let box = Unmanaged<ClientStreamHandlerBox>.fromOpaque(userdataRaw).takeUnretainedValue()
+
+            let recvFn: () -> Value? = {
+                var raw = callwire_value_t()
+                let rc = recv(recvCtx, &raw)
+                if rc == 0 {
+                    let value = decodeValue(raw)
+                    withUnsafeMutablePointer(to: &raw) { callwire_value_free($0) }
+                    return value
+                }
+                return nil
+            }
+
+            do {
+                let result = try box.handler(recvFn)
+                resultOut?.pointee = makeRawValue(result)
+                return 0
+            } catch {
+                resultOut?.pointee = makeRawValue(.null)
+                return -1
+            }
+        }
+        guard rc == 0 else { throw CallwireError(message: "exportClientStream failed: \(lastError())") }
+    }
+
+    /// Bidi: `try server.exportBidi("echoDouble") { recv, emit in
+    ///   while let chunk = recv(), case .int64(let v) = chunk { emit(.int64(v * 2)) } }`
+    public func exportBidi(_ name: String, handler: @escaping BidiHandler) throws {
+        guard let h = handle else { throw CallwireError(message: "server is closed") }
+        let box = BidiHandlerBox(handler)
+        bidiBoxes.append(box)
+
+        let userdata = Unmanaged.passUnretained(box).toOpaque()
+        let rc = callwire_server_export_bidi_ctx(h, name, userdata) { userdataRaw, recv, recvCtx, emit, emitCtx in
+            guard let userdataRaw, let recv, let emit else { return -1 }
+            let box = Unmanaged<BidiHandlerBox>.fromOpaque(userdataRaw).takeUnretainedValue()
+
+            let recvFn: () -> Value? = {
+                var raw = callwire_value_t()
+                let rc = recv(recvCtx, &raw)
+                if rc == 0 {
+                    let value = decodeValue(raw)
+                    withUnsafeMutablePointer(to: &raw) { callwire_value_free($0) }
+                    return value
+                }
+                return nil
+            }
+            let emitFn: (Value) -> Void = { value in
+                var raw = makeRawValue(value)
+                _ = emit(emitCtx, &raw)
+                callwire_value_free(&raw)
+            }
+
+            do {
+                try box.handler(recvFn, emitFn)
+                return 0
+            } catch {
+                return -1
+            }
+        }
+        guard rc == 0 else { throw CallwireError(message: "exportBidi failed: \(lastError())") }
     }
 
     /// Typed 1-arg export — no `.int64(let a)` pattern-matching or `.int64(...)`

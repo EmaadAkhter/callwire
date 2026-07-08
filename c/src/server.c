@@ -568,13 +568,23 @@ static void *handle_connection(void *arg) {
     int sockfd = (int)(intptr_t)args[1];
     free(arg);
 
-    conn_state_t conn;
-    conn.sockfd = sockfd;
-    pthread_mutex_init(&conn.write_mu, NULL);
-    pthread_mutex_init(&conn.inputs_mu, NULL);
-    conn.inputs = NULL;
-    conn.inputs_count = 0;
-    conn.inputs_cap = 0;
+    /* Heap-allocated and deliberately never freed: detached dispatch threads
+     * for streaming calls (client-stream/bidi) hold a pointer to this struct
+     * and may still be writing their final stream_end frame after this read
+     * loop returns (e.g. the client closes right after its last recv()).
+     * A stack-allocated conn here previously caused exactly that — a real,
+     * reproducible use-after-free/segfault (a detached handler thread
+     * dereferencing a popped stack frame), not just a hypothetical race.
+     * Heap + intentional leak trades a bounded per-connection leak for
+     * correctness; revisit with refcounting if long-running high-churn
+     * servers make the leak matter in practice. */
+    conn_state_t *conn = malloc(sizeof(conn_state_t));
+    conn->sockfd = sockfd;
+    pthread_mutex_init(&conn->write_mu, NULL);
+    pthread_mutex_init(&conn->inputs_mu, NULL);
+    conn->inputs = NULL;
+    conn->inputs_count = 0;
+    conn->inputs_cap = 0;
 
     for (;;) {
         uint8_t *payload;
@@ -593,7 +603,7 @@ static void *handle_connection(void *arg) {
         if (msg.type && (strcmp(msg.type, "stream_chunk") == 0 ||
                           strcmp(msg.type, "stream_close") == 0 ||
                           strcmp(msg.type, "stream_end") == 0)) {
-            stream_input_t *in = conn_find_input(&conn, msg.id);
+            stream_input_t *in = conn_find_input(conn, msg.id);
             if (in) {
                 if (strcmp(msg.type, "stream_chunk") == 0) {
                     /* Move ownership of the decoded result value into the queue. */
@@ -611,7 +621,7 @@ static void *handle_connection(void *arg) {
         }
 
         if (msg.type && strcmp(msg.type, "request") == 0) {
-            dispatch_request(server, &conn, &msg);
+            dispatch_request(server, conn, &msg);
         }
 
         callwire_wire_message_free(&msg);
@@ -619,22 +629,13 @@ static void *handle_connection(void *arg) {
 
     /* Unblock any handler thread still waiting on input from a call that
      * never sent stream_close/stream_end before the connection dropped. */
-    pthread_mutex_lock(&conn.inputs_mu);
-    for (size_t i = 0; i < conn.inputs_count; i++) {
+    pthread_mutex_lock(&conn->inputs_mu);
+    for (size_t i = 0; i < conn->inputs_count; i++) {
         callwire_value_t nil_val;
         nil_val.type = CALLWIRE_NULL;
-        stream_input_push(conn.inputs[i], nil_val, 1);
+        stream_input_push(conn->inputs[i], nil_val, 1);
     }
-    pthread_mutex_unlock(&conn.inputs_mu);
-
-    /* Note: in-flight dispatch threads still hold conn state by pointer;
-     * this simplified implementation leaks the conn_state_t/mutexes rather
-     * than solving the shutdown race of "free conn while a detached thread
-     * might still be writing to it" — acceptable for a first working
-     * streaming server (each conn is bounded by one client connection's
-     * lifetime, not a long-running leak across many connections a la a
-     * server that never closes any connection... this IS a real leak under
-     * sustained load; flagged here rather than silently ignored). */
+    pthread_mutex_unlock(&conn->inputs_mu);
 
     close(sockfd);
     return NULL;

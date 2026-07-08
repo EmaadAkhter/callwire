@@ -43,6 +43,28 @@ try! server.export("counter") { _ in
 try! server.exportTyped("addTyped") { (a: Int64, b: Int64) in a + b }
 try! server.exportTyped("greetTyped") { (name: String) in "Hello, \(name)!" }
 
+// Server-streaming
+try! server.exportStream("countTo") { args, emit in
+    guard case .int64(let n) = args[0] else { return }
+    for i in 1...n { emit(.int64(i)) }
+}
+
+// Client-streaming
+try! server.exportClientStream("sumStream") { recv in
+    var sum: Int64 = 0
+    while let chunk = recv() {
+        if case .int64(let v) = chunk { sum += v }
+    }
+    return .int64(sum)
+}
+
+// Bidi
+try! server.exportBidi("echoDouble") { recv, emit in
+    while let chunk = recv() {
+        if case .int64(let v) = chunk { emit(.int64(v * 2)) }
+    }
+}
+
 DispatchQueue.global().async {
     try? server.serve()
 }
@@ -80,6 +102,34 @@ do {
 } catch let e as CallwireError {
     print("test_not_found: OK (\(e.message))")
 }
+
+// Server-streaming round trip
+let countStream = try! client.streamBegin("countTo", args: [.int64(5)])
+var expected: Int64 = 1
+while let chunk = try! countStream.next() {
+    assertEqual(chunk, .int64(expected), "countTo chunk \(expected)")
+    expected += 1
+}
+assertEqual(.int64(expected), .int64(6), "countTo saw all 5 chunks")
+print("test_server_streaming: OK (1..5)")
+
+// Client-streaming round trip
+let sumStream = try! client.exportStream("sumStream")
+for i: Int64 in 1...4 { try! sumStream.send(.int64(i)) }
+let sumResult = try! sumStream.closeAndRecv()
+assertEqual(sumResult, .int64(10), "sumStream(1+2+3+4)")
+print("test_client_streaming: OK (1+2+3+4 = 10)")
+
+// Bidi round trip
+let echoStream = try! client.bidiStream("echoDouble")
+try! echoStream.send(.int64(3))
+let r1 = try! echoStream.next()
+assertEqual(r1 ?? .null, .int64(6), "echoDouble(3)")
+try! echoStream.send(.int64(5))
+let r2 = try! echoStream.next()
+assertEqual(r2 ?? .null, .int64(10), "echoDouble(5)")
+try! echoStream.closeSend()
+print("test_bidi_streaming: OK (3->6, 5->10)")
 
 client.close()
 server.close()
