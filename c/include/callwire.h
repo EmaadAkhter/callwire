@@ -86,6 +86,26 @@ int callwire_client_call(callwire_client_t *client, const char *func,
                          callwire_value_t *result_out);
 
 /**
+ * Convenience: unary call with up to 8 int64 args, int64 result. Builds the
+ * callwire_value_t array internally — no manual tagged-union construction.
+ * Returns 0 on success, -1 on failure (see callwire_error()) or if the
+ * server's result isn't an int64.
+ *   int64_t result;
+ *   callwire_call_ints(client, "add", (int64_t[]){10, 20}, 2, &result);
+ */
+int callwire_call_ints(callwire_client_t *client, const char *func,
+                        const int64_t *args, size_t argc, int64_t *result_out);
+
+/**
+ * Convenience: unary call with a single string arg (or none, pass NULL),
+ * string result copied into result_buf (null-terminated, truncated if it
+ * doesn't fit). Returns 0 on success, -1 on failure or if the server's
+ * result isn't a string.
+ */
+int callwire_call_str(callwire_client_t *client, const char *func, const char *arg,
+                       char *result_buf, size_t result_buf_len);
+
+/**
  * Begin server-streaming. Returns a stream ID for use with callwire_stream_recv().
  */
 uint64_t callwire_client_stream_begin(callwire_client_t *client, const char *func,
@@ -166,6 +186,50 @@ int callwire_server_export(callwire_server_t *server, const char *func,
  */
 int callwire_server_export_ctx(callwire_server_t *server, const char *func, void *userdata,
                                int (*fn_ptr)(void *, callwire_value_t *, size_t, callwire_value_t *));
+
+/**
+ * Convenience macros: define a unary int64-arg handler without hand-writing
+ * a (callwire_value_t*, size_t, callwire_value_t*) -> int function and
+ * manually unpacking args[i].val.int_val / packing the result.
+ *
+ *   CALLWIRE_EXPORT_INT2(add, a, b) { return a + b; }
+ *   callwire_server_export(server, "add", add);
+ *
+ * Expands to a `static int add(callwire_value_t*, size_t, callwire_value_t*)`
+ * function — the name is usable directly as the fn_ptr argument to
+ * callwire_server_export(). No bounds/type checking on args beyond arity
+ * (matches the rest of this convenience layer's scope: common case only,
+ * drop to the full ABI for anything more defensive).
+ */
+#define CALLWIRE_EXPORT_INT1(NAME, A) \
+    static int64_t NAME##_body(int64_t A); \
+    static int NAME(callwire_value_t *cw_args, size_t cw_argc, callwire_value_t *cw_out) { \
+        (void)cw_argc; \
+        cw_out->type = CALLWIRE_INT64; \
+        cw_out->val.int_val = NAME##_body(cw_args[0].val.int_val); \
+        return 0; \
+    } \
+    static int64_t NAME##_body(int64_t A)
+
+#define CALLWIRE_EXPORT_INT2(NAME, A, B) \
+    static int64_t NAME##_body(int64_t A, int64_t B); \
+    static int NAME(callwire_value_t *cw_args, size_t cw_argc, callwire_value_t *cw_out) { \
+        (void)cw_argc; \
+        cw_out->type = CALLWIRE_INT64; \
+        cw_out->val.int_val = NAME##_body(cw_args[0].val.int_val, cw_args[1].val.int_val); \
+        return 0; \
+    } \
+    static int64_t NAME##_body(int64_t A, int64_t B)
+
+#define CALLWIRE_EXPORT_INT3(NAME, A, B, C) \
+    static int64_t NAME##_body(int64_t A, int64_t B, int64_t C); \
+    static int NAME(callwire_value_t *cw_args, size_t cw_argc, callwire_value_t *cw_out) { \
+        (void)cw_argc; \
+        cw_out->type = CALLWIRE_INT64; \
+        cw_out->val.int_val = NAME##_body(cw_args[0].val.int_val, cw_args[1].val.int_val, cw_args[2].val.int_val); \
+        return 0; \
+    } \
+    static int64_t NAME##_body(int64_t A, int64_t B, int64_t C)
 
 /**
  * Start accepting connections (blocks until error or close).

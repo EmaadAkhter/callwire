@@ -17,6 +17,7 @@ set(CALLWIRE_SOURCES
     src/client.c
     src/server.c
     src/errors.c
+    src/convenience.c
 )
 
 if(CALLWIRE_WITH_TLS)
@@ -83,3 +84,8 @@ add_executable(test_loopback tests/test_loopback.c src/codec.c src/framing.c src
 target_include_directories(test_loopback PRIVATE include)
 target_link_libraries(test_loopback PRIVATE Threads::Threads)
 add_test(NAME loopback COMMAND test_loopback)
+
+add_executable(test_convenience tests/test_convenience.c src/codec.c src/framing.c src/client.c src/server.c src/errors.c src/convenience.c)
+target_include_directories(test_convenience PRIVATE include)
+target_link_libraries(test_convenience PRIVATE Threads::Threads)
+add_test(NAME convenience COMMAND test_convenience)
