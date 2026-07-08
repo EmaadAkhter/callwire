@@ -111,3 +111,4 @@ desktop.ini
 *.bak
 *.orig
 c/build/
+swift/.build/

@@ -1,0 +1,4 @@
+module CCallwire {
+    header "callwire.h"
+    export *
+}
