@@ -26,18 +26,18 @@ jobs:
       - name: Set up Rust (for interop)
         uses: dtolnay/rust-toolchain@stable
 
-      # The Go integration tests expect the Python virtualenv at python/.venv/bin/python
-          - name: Setup Python Virtual Environment
-            run: |
-              cd python
-              python -m venv .venv
-              .venv/bin/pip install --upgrade pip
-              .venv/bin/pip install -r requirements.txt
+      - name: Setup Python Virtual Environment
+        run: |
+          cd python
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
 
       - name: Run Go tests
         run: |
           cd go/callwire
-          go test -v ./...
+          go vet ./...
+          go test -v -cover ./...
 
   python-tests:
     name: Python Unit Tests
@@ -50,10 +50,10 @@ jobs:
         with:
           python-version: '3.12'
 
-- name: Install dependencies
-          run: |
-            python -m pip install --upgrade pip
-            pip install -r python/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
 
       - name: Run Python tests
         run: |
