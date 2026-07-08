@@ -16,30 +16,58 @@
 - ✅ tests/test_codec.c: 5 round-trip tests (request, bidi request, string response,
   nested array/map, error + stream frames) — all passing (`gcc -std=c99 ... && run`).
 
-## In Progress / Stub
-- ⏳ framing.c: TCP I/O (basic functions sketched, not wired to codec yet)
-- ⏳ client.c: Unary + streaming dispatch (depends on codec — now unblocked)
-- ⏳ server.c: Handler registration + dispatch (depends on codec — now unblocked)
-- ⏳ tls.c: OpenSSL integration
-- ⏳ errors.c: Thread-local error buffer
+## Completed (continued)
+- ✅ errors.c: thread-local `callwire_error()` buffer + internal `callwire_error_set()`
+  (printf-style, via vsnprintf). Fixed a link-time bug: `callwire_value_free` was
+  defined in both codec.c AND errors.c (duplicate symbol) — removed from errors.c.
+- ✅ framing.c: length-prefixed frame read/write, fully wired to codec.c. Fixed a real
+  bug: the original stub called `recv()`/`send()` once and assumed it returned the
+  full requested length — TCP makes no such guarantee (short reads/writes are
+  normal). Now loops via `recv_all`/`send_all` helpers until the full frame is
+  transferred or the connection genuinely fails.
+- ✅ client.c: `callwire_client_connect/close/call/stream_begin/stream_recv/
+  export_stream_begin/export_stream_send/export_stream_close/bidi_stream_begin/
+  bidi_stream_send/bidi_stream_recv/bidi_stream_close_send` — all implemented.
+  **Known simplification** (documented in-code): one RPC call in flight per
+  connection at a time — no background reader thread or id-keyed pending map like
+  Go/Rust/Java. A caller wanting concurrent calls opens multiple client connections.
+  Correct and sufficient for a first working C SDK; upgrade path is documented.
+- ✅ server.c: `callwire_server_new/export/serve/close` — real accept loop
+  (pthread-per-connection), dynamic registry (realloc-grown array, mutex-protected),
+  full request dispatch (lookup, invoke, encode response/error, write frame).
+  **Scope note**: the public C ABI (`callwire_server_export`) only exposes unary
+  registration — client-streaming/bidi server-side dispatch is not yet part of the
+  C ABI (stream_chunk/close/end frames are read and silently ignored). This matches
+  what callwire.h actually declares; extending the ABI for streaming registration
+  is a separate, deliberate API-design step, not an oversight.
+- ✅ tests/test_loopback.c: real TCP round-trip — server thread + client connection
+  on 127.0.0.1, exercises unary call (int args), unary call (string args/result),
+  and the NotFoundError path. **All 3 tests pass.**
+
+## Not Yet Implemented
+- ⏳ tls.c: OpenSSL integration (client/server TLS + mTLS)
+- ⏳ Streaming registration on the server ABI (client-streaming/bidi handlers)
+- ⏳ Background reader thread for concurrent calls per connection (see client.c note above)
 
 ## Estimate to Complete
-- **Codec (msgpack encode/decode)**: ~~800 LOC~~ DONE (~700 LOC across codec.c + mpack_stub.h + tests)
-- **Framing (frame I/O)**: 150 LOC
-- **Client (dispatch + streaming)**: 1200 LOC
-- **Server (dispatch + streaming)**: 1000 LOC
-- **TLS integration**: 400 LOC
+- **Codec**: DONE
+- **Framing**: DONE
+- **Client (unary + streaming, single-call-per-connection)**: DONE
+- **Server (unary dispatch)**: DONE
+- **Streaming registration on server ABI**: ~400 LOC
+- **TLS integration**: ~400 LOC
+- **Concurrent-call client upgrade (reader thread + pending map)**: ~500 LOC
 
-**Remaining: ~2750 LOC**
+**Remaining: ~1300 LOC** (down from ~3700 at session start)
 
-## Blocking
-- Full C implementation → C++ can wrap
-- Full C implementation → COBOL can CALL
-- Full C implementation → Swift can @cImport
+## Status: C is now a working Tier-1 SDK for unary RPC over plaintext TCP.
+Server-streaming/client-streaming/bidi are implemented client-side (matching the
+public ABI) but the server ABI doesn't yet expose streaming registration — that's
+the next increment, not a blocker for C++/COBOL/Swift to start wrapping the unary
+path today.
 
 ## Next Steps
-1. framing.c: length-prefixed frame read/write over a socket fd (mirrors Go/Python framing.py)
-2. client.c: connect/call/stream_begin/stream_recv using codec.c + framing.c
-3. server.c: export/serve/accept-loop dispatch using codec.c + framing.c
-4. Once client.c + server.c compile and a loopback round-trip test passes, C is a real Tier-1 SDK.
-5. Then: C++ wraps C core, COBOL CALLs C core, Swift @cImports C core ABI.
+1. C++ header-only wrapper over this C core ABI (unary now, streaming as C core catches up)
+2. COBOL CALL bindings via the same C ABI (unary only — matches COBOL's typical scope)
+3. Swift @cImport over the C ABI
+4. Extend callwire.h with streaming server registration once a language actually needs it

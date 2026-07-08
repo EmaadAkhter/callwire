@@ -31,4 +31,7 @@ void callwire_wire_message_free(callwire_wire_message_t *msg);
 int callwire_framing_read_frame(int sockfd, uint8_t **payload_out, size_t *len_out);
 int callwire_framing_write_frame(int sockfd, const uint8_t *payload, size_t len);
 
+/* Errors: thread-local last-error message (printf-style). */
+void callwire_error_set(const char *fmt, ...);
+
 #endif /* CALLWIRE_INTERNAL_H */
