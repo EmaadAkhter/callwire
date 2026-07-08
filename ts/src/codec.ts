@@ -5,6 +5,7 @@ export interface WireMessage {
   type: string;
   func?: string;
   args?: unknown[];
+  stream?: boolean;
   result?: unknown;
   error_type?: string;
   message?: string;
@@ -51,6 +52,22 @@ export function packStreamEnd(id: number): Buffer {
 }
 
 /**
+ * Pack a stream_close sentinel (client-streaming termination).
+ */
+export function packStreamClose(id: number): Buffer {
+  const msg: WireMessage = { id, type: 'stream_close' };
+  return Buffer.from(encode(msg));
+}
+
+/**
+ * Pack a bidirectional-streaming request.
+ */
+export function packBidiRequest(id: number, func: string, args: unknown[]): Buffer {
+  const msg: WireMessage = { id, type: 'request', func, args, stream: true };
+  return Buffer.from(encode(msg));
+}
+
+/**
  * Decode a raw buffer into a WireMessage.
  */
 export function unpack(payload: Buffer): WireMessage {
@@ -60,6 +77,7 @@ export function unpack(payload: Buffer): WireMessage {
     type: decoded.type as string,
     func: decoded.func as string | undefined,
     args: decoded.args as unknown[] | undefined,
+    stream: decoded.stream as boolean | undefined,
     result: decoded.result,
     error_type: decoded.error_type as string | undefined,
     message: decoded.message as string | undefined,

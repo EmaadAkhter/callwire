@@ -1,8 +1,11 @@
 import msgpack
 
 
-def pack_request(id: int, func: str, args: list) -> bytes:
-    return msgpack.packb({"id": id, "type": "request", "func": func, "args": args})
+def pack_request(id: int, func: str, args: list, stream: bool = False) -> bytes:
+    msg = {"id": id, "type": "request", "func": func, "args": args}
+    if stream:
+        msg["stream"] = True
+    return msgpack.packb(msg)
 
 
 def pack_response(id: int, result) -> bytes:
@@ -21,6 +24,16 @@ def pack_stream_chunk(id: int, result) -> bytes:
 
 def pack_stream_end(id: int) -> bytes:
     return msgpack.packb({"id": id, "type": "stream_end"})
+
+
+def pack_stream_close(id: int) -> bytes:
+    return msgpack.packb({"id": id, "type": "stream_close"})
+
+
+def pack_bidi_request(id: int, func: str, args: list = None) -> bytes:
+    if args is None:
+        args = []
+    return msgpack.packb({"id": id, "type": "request", "func": func, "args": args, "stream": True})
 
 
 def unpack(payload: bytes) -> dict:

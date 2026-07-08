@@ -26,6 +26,9 @@ pub struct WireMessage {
     pub args: Option<Value>,
 
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stream: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<Value>,
 
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -116,6 +119,41 @@ pub fn pack_stream_end(id: u64) -> Result<Vec<u8>, rmp_serde::encode::Error> {
         msg_type: "stream_end",
     };
     to_vec_map(&end)
+}
+
+pub fn pack_stream_close(id: u64) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    #[derive(Serialize)]
+    struct CloseRef {
+        id: u64,
+        #[serde(rename = "type")]
+        msg_type: &'static str,
+    }
+    let close = CloseRef {
+        id,
+        msg_type: "stream_close",
+    };
+    to_vec_map(&close)
+}
+
+pub fn pack_bidi_request<A: Serialize>(id: u64, func: &str, args: &A) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    #[derive(Serialize)]
+    struct BidiRequestRef<'a, A> {
+        id: u64,
+        #[serde(rename = "type")]
+        msg_type: &'static str,
+        func: &'a str,
+        args: &'a A,
+        stream: bool,
+    }
+
+    let req = BidiRequestRef {
+        id,
+        msg_type: "request",
+        func,
+        args,
+        stream: true,
+    };
+    to_vec_map(&req)
 }
 
 /// Decode an inbound wire message. Accepts both map and array formats.
