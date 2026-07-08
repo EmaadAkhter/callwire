@@ -85,6 +85,53 @@ public class Client {
     }
 
     /**
+     * Unary call with varargs instead of List.of/Arrays.asList boilerplate.
+     * Example: client.call("add", 10L, 20L)
+     */
+    public Object call(String func, Object... args) throws IOException, CallwireException, TimeoutException {
+        return call(func, Arrays.asList(args));
+    }
+
+    /**
+     * Unary call, casting the result to Long. Throws CallwireException (not
+     * ClassCastException) if the server's result isn't a number.
+     */
+    public long callLong(String func, Object... args) throws IOException, CallwireException, TimeoutException {
+        Object result = call(func, args);
+        if (!(result instanceof Number)) {
+            throw new CallwireException("TypeError", "expected numeric result, got " +
+                    (result == null ? "null" : result.getClass().getSimpleName()));
+        }
+        return ((Number) result).longValue();
+    }
+
+    /**
+     * Unary call, casting the result to String. Throws CallwireException (not
+     * ClassCastException) if the server's result isn't a string.
+     */
+    public String callString(String func, Object... args) throws IOException, CallwireException, TimeoutException {
+        Object result = call(func, args);
+        if (!(result instanceof String)) {
+            throw new CallwireException("TypeError", "expected string result, got " +
+                    (result == null ? "null" : result.getClass().getSimpleName()));
+        }
+        return (String) result;
+    }
+
+    /**
+     * Unary call, casting the result to Double. Throws CallwireException (not
+     * ClassCastException) if the server's result isn't a number.
+     */
+    public double callDouble(String func, Object... args) throws IOException, CallwireException, TimeoutException {
+        Object result = call(func, args);
+        if (!(result instanceof Number)) {
+            throw new CallwireException("TypeError", "expected numeric result, got " +
+                    (result == null ? "null" : result.getClass().getSimpleName()));
+        }
+        return ((Number) result).doubleValue();
+    }
+
+    /**
      * Server-streaming: send request, iterate over stream_chunk responses until stream_end.
      */
     public Iterator<Object> callStream(String func, List<Object> args) throws IOException {
