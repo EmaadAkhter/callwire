@@ -5,7 +5,7 @@ import time
 import logging
 
 from .framing import read_frame, write_frame
-from .codec import pack_request, unpack
+from .codec import pack_request, pack_stream_close, pack_stream_end, pack_bidi_request, unpack
 
 logger = logging.getLogger("callwire.client")
 
@@ -371,4 +371,155 @@ class Client:
     def ref_stream(self, func: str):
         """Bind a remote streaming function once and return a reusable generator-maker."""
         return lambda *args: self.call_stream(func, list(args))
+
+    def export_stream(self, func: str):
+        """
+        Begin client-streaming: client sends multiple chunks, server sends single response.
+        Returns ExportStream context manager.
+
+        Usage:
+            stream = client.export_stream("process_batch")
+            with stream:
+                stream.send(item1)
+                stream.send(item2)
+                result = stream.recv()
+        """
+        return ExportStream(self, func)
+
+    def bidi_stream(self, func: str):
+        """
+        Begin bidirectional-streaming: both sides send/recv chunks concurrently.
+        Returns BidiStream context manager.
+
+        Usage:
+            stream = client.bidi_stream("chat")
+            with stream:
+                stream.send(msg1)
+                msg2 = stream.recv()
+        """
+        return BidiStream(self, func)
+
+
+class ExportStream:
+    """Client-streaming: send multiple chunks, receive single response."""
+
+    def __init__(self, client: "Client", func: str):
+        self.client = client
+        self.func = func
+        self.id = None
+        self.q = None
+
+    def __enter__(self):
+        if not self.client._connected:
+            raise ConnectionError("not connected")
+        self.id = self.client._next_request_id()
+        self.q = queue.Queue(maxsize=256)
+        with self.client._pending_lock:
+            self.client._pending[self.id] = self.q
+        # Send initial request
+        payload = pack_request(self.id, self.func, [])
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def send(self, chunk):
+        """Send a chunk to the server."""
+        if not self.id:
+            raise RuntimeError("stream not open")
+        payload = pack_stream_chunk(self.id, chunk)
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+
+    def close_and_recv(self, timeout: float = 30.0):
+        """Signal end of chunks and wait for server response."""
+        if not self.id:
+            raise RuntimeError("stream not open")
+        # Send stream_close
+        payload = pack_stream_close(self.id)
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+        # Wait for response
+        try:
+            msg = self.q.get(timeout=timeout)
+        except queue.Empty:
+            with self.client._pending_lock:
+                self.client._pending.pop(self.id, None)
+            raise TimeoutError("stream timed out waiting for response")
+
+        if isinstance(msg, _Done):
+            raise ConnectionError("connection closed during stream")
+
+        if msg.get("type") == "error":
+            raise CallwireError(msg["error_type"], msg["message"])
+
+        return msg.get("result")
+
+
+class BidiStream:
+    """Bidirectional-streaming: concurrent send/recv both directions."""
+
+    def __init__(self, client: "Client", func: str):
+        self.client = client
+        self.func = func
+        self.id = None
+        self.q = None
+        self.closed_send = False
+
+    def __enter__(self):
+        if not self.client._connected:
+            raise ConnectionError("not connected")
+        self.id = self.client._next_request_id()
+        self.q = queue.Queue(maxsize=256)
+        with self.client._pending_lock:
+            self.client._pending[self.id] = self.q
+        # Send initial bidi request (stream=true)
+        payload = pack_bidi_request(self.id, self.func, [])
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def send(self, chunk):
+        """Send a chunk to the server."""
+        if not self.id or self.closed_send:
+            raise RuntimeError("stream not open or already closed")
+        payload = pack_stream_chunk(self.id, chunk)
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+
+    def close_send(self):
+        """Signal end of sending. Must still call recv() until it returns None."""
+        if not self.id:
+            raise RuntimeError("stream not open")
+        self.closed_send = True
+        payload = pack_stream_end(self.id)
+        with self.client._write_lock:
+            write_frame(self.client.conn, payload)
+
+    def recv(self, timeout: float = 30.0):
+        """Receive next chunk from server. Returns None when stream_end received."""
+        if not self.id:
+            raise RuntimeError("stream not open")
+        try:
+            msg = self.q.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError("stream timed out waiting for chunk")
+
+        if isinstance(msg, _Done):
+            raise ConnectionError("connection closed during stream")
+
+        msg_type = msg.get("type", "")
+        if msg_type == "stream_chunk":
+            return msg.get("result")
+        elif msg_type == "stream_end":
+            return None
+        elif msg_type == "error":
+            raise CallwireError(msg["error_type"], msg["message"])
+        else:
+            return None
 

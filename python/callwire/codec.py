@@ -26,6 +26,10 @@ def pack_stream_end(id: int) -> bytes:
     return msgpack.packb({"id": id, "type": "stream_end"})
 
 
+def pack_stream_chunk(id: int, result) -> bytes:
+    return msgpack.packb({"id": id, "type": "stream_chunk", "result": result})
+
+
 def pack_stream_close(id: int) -> bytes:
     return msgpack.packb({"id": id, "type": "stream_close"})
 
