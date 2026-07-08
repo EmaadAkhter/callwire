@@ -20,18 +20,23 @@ set(CALLWIRE_SOURCES
 )
 
 if(CALLWIRE_WITH_TLS)
-    list(APPEND CALLWIRE_SOURCES src/tls.c)
-    find_package(OpenSSL REQUIRED)
-    add_compile_definitions(CALLWIRE_WITH_TLS)
+    # tls.c is a stub (OpenSSL integration not yet implemented) — excluded
+    # from the default build until it does real work. Re-enable once tls.c
+    # has a working implementation (see IMPLEMENTATION_STATUS.md).
+    # list(APPEND CALLWIRE_SOURCES src/tls.c)
+    # find_package(OpenSSL REQUIRED)
+    # add_compile_definitions(CALLWIRE_WITH_TLS)
 endif()
 
-# Vendored mpack (single-file msgpack implementation).
-set(CALLWIRE_SOURCES ${CALLWIRE_SOURCES} third_party/mpack.c)
+# mpack_stub.h is header-only (no third_party/mpack.c to compile).
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+
+find_package(Threads REQUIRED)
 
 # Static library.
 add_library(callwire_core_static STATIC ${CALLWIRE_SOURCES})
 target_include_directories(callwire_core_static PUBLIC include)
+target_link_libraries(callwire_core_static PUBLIC Threads::Threads)
 if(CALLWIRE_WITH_TLS)
     target_link_libraries(callwire_core_static PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
@@ -40,6 +45,7 @@ set_target_properties(callwire_core_static PROPERTIES OUTPUT_NAME callwire_core)
 # Shared library.
 add_library(callwire_core_shared SHARED ${CALLWIRE_SOURCES})
 target_include_directories(callwire_core_shared PUBLIC include)
+target_link_libraries(callwire_core_shared PUBLIC Threads::Threads)
 if(CALLWIRE_WITH_TLS)
     target_link_libraries(callwire_core_shared PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
@@ -60,6 +66,16 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/CallwireCoreConfig.cmake" DESTINATION
 
 # Basic smoke tests (optional).
 enable_testing()
+
 add_executable(test_framing tests/test_framing.c src/framing.c src/errors.c)
 target_include_directories(test_framing PRIVATE include)
 add_test(NAME framing COMMAND test_framing)
+
+add_executable(test_codec tests/test_codec.c src/codec.c)
+target_include_directories(test_codec PRIVATE include)
+add_test(NAME codec COMMAND test_codec)
+
+add_executable(test_loopback tests/test_loopback.c src/codec.c src/framing.c src/client.c src/server.c src/errors.c)
+target_include_directories(test_loopback PRIVATE include)
+target_link_libraries(test_loopback PRIVATE Threads::Threads)
+add_test(NAME loopback COMMAND test_loopback)
