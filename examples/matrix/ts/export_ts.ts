@@ -1,7 +1,7 @@
 // TypeScript export script: exports "add" on a fixed port. init() performs
 // setup and is called unconditionally at the bottom — auto-starts as soon
 // as the script runs, no separate manual step.
-import { Server } from '../../ts/src/server';
+import { Server } from '../../../ts/src/server';
 
 const MATRIX_PORT = 9104;
 

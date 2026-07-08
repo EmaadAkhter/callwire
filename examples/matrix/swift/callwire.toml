@@ -1,0 +1,28 @@
+# callwire.toml — Swift matrix example
+# ────────────────────────────────────────────────────────────
+# export_swift is the long-running worker (registered as a service below).
+# import_swift is a one-shot client script, not a persistent service — run
+# it manually after the export workers you want to test are up.
+#
+# Build both via the same manual swiftc pipeline as swift/build.sh (SwiftPM's
+# manifest execution is broken in some toolchains — see swift/README.md):
+#   for f in codec framing client server errors; do
+#     clang -c -std=c99 -I../../../swift/Sources/CCallwire/include \
+#       -I../../../swift/Sources/CCallwire ../../../swift/Sources/CCallwire/$f.c -o /tmp/matrixswift_$f.o
+#   done
+#   swiftc -parse-as-library -I../../../swift/Sources/CCallwire/include \
+#     -c ../../../swift/Sources/Callwire/Callwire.swift -o /tmp/Callwire.o \
+#     -module-name Callwire -emit-module -emit-module-path /tmp/Callwire.swiftmodule
+#   swiftc -I../../../swift/Sources/CCallwire/include -I/tmp export_swift.swift \
+#     /tmp/Callwire.o /tmp/matrixswift_*.o -o export_swift
+#   swiftc -I../../../swift/Sources/CCallwire/include -I/tmp import_swift.swift \
+#     /tmp/Callwire.o /tmp/matrixswift_*.o -o import_swift
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-swift"
+version = "1.0.0"
+
+[services.swift-matrix-export]
+dev_cmd  = "./export_swift"
+prod_cmd = "./export_swift"

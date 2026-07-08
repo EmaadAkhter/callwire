@@ -219,7 +219,7 @@ dev_cmd  = "cd rust && cargo run --quiet --example my-worker"
 prod_cmd = "./bin/rust-worker"
 ```
 
-Generate it with any of the four native CLIs — they all produce the same output:
+Generate it with any of the native CLIs — they all produce the same output:
 
 ```bash
 # Python
@@ -233,7 +233,16 @@ cargo run --manifest-path rust/Cargo.toml --bin callwire -- init
 
 # TypeScript
 npx tsx ts/src/cli.ts init
+
+# Java
+cd java && mvn -q compile exec:java -Dexec.args="init"
+
+# C (also used by C++/Swift — they share the C core's CLI, no separate one)
+cd c && mkdir -p build && cd build && cmake -DCALLWIRE_WITH_TLS=OFF .. && cmake --build . --target callwire
+./callwire init
 ```
+
+COBOL doesn't ship a `callwire init` — it's a client/server library (`cobol/src/cobol_shim.c`), not a standalone CLI tool, matching its scope as a legacy-integration SDK rather than an orchestrated worker.
 
 Then call `init()` — Callwire starts a registry, spawns workers, and routes everything automatically:
 

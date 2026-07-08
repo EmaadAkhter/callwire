@@ -1,0 +1,24 @@
+# callwire.toml — C++ matrix example
+# ────────────────────────────────────────────────────────────
+# export_cpp is the long-running worker (registered as a service below).
+# import_cpp is a one-shot client script, not a persistent service — run it
+# manually after the export workers you want to test are up.
+#
+# Build both first (compile the C core as C, then link — see
+# cpp/README-style notes in examples/1_standalone/cpp_server.cpp):
+#   for f in codec framing client server errors; do
+#     gcc -std=c99 -pthread -I../../../c/include -c ../../../c/src/$f.c -o /tmp/matrixcpp_$f.o
+#   done
+#   g++ -std=c++17 -pthread -I../../../c/include -I../../../cpp/include/callwire \
+#     export_cpp.cpp /tmp/matrixcpp_*.o -o export_cpp
+#   g++ -std=c++17 -pthread -I../../../c/include -I../../../cpp/include/callwire \
+#     import_cpp.cpp /tmp/matrixcpp_*.o -o import_cpp
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-cpp"
+version = "1.0.0"
+
+[services.cpp-matrix-export]
+dev_cmd  = "./export_cpp"
+prod_cmd = "./export_cpp"

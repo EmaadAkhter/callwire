@@ -1,6 +1,6 @@
 // TypeScript import script: calls "add"(10,20) on every OTHER language's
 // matrix export server (best-effort — SKIP if a port isn't reachable).
-import { Client } from '../../ts/src/client';
+import { Client } from '../../../ts/src/client';
 
 const TARGETS: Record<string, number> = {
   go: 9101,

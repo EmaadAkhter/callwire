@@ -1,0 +1,15 @@
+# callwire.toml — TypeScript matrix example
+# ────────────────────────────────────────────────────────────
+# export_ts.ts is the long-running worker (registered as a service below).
+# import_ts.ts is a one-shot client script, not a persistent service — run
+# it manually after the export workers you want to test are up:
+#   npx tsx import_ts.ts
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-ts"
+version = "1.0.0"
+
+[services.ts-matrix-export]
+dev_cmd  = "npx tsx export_ts.ts"
+prod_cmd = "node dist/export_ts.js"

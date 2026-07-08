@@ -1,0 +1,15 @@
+# callwire.toml — Go matrix example
+# ────────────────────────────────────────────────────────────
+# export_go.go is the long-running worker (registered as a service below).
+# import_go.go is a one-shot client script, not a persistent service — run
+# it manually after the export workers you want to test are up:
+#   go run import_go.go
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-go"
+version = "1.0.0"
+
+[services.go-matrix-export]
+dev_cmd  = "go run export_go.go"
+prod_cmd = "./export_go"

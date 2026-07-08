@@ -1,0 +1,15 @@
+# callwire.toml — Rust matrix example
+# ────────────────────────────────────────────────────────────
+# export_rust is the long-running worker (registered as a service below).
+# import_rust is a one-shot client script, not a persistent service — run
+# it manually after the export workers you want to test are up:
+#   cargo run --bin import_rust
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-rust"
+version = "1.0.0"
+
+[services.rust-matrix-export]
+dev_cmd  = "cargo run --bin export_rust"
+prod_cmd = "./target/release/export_rust"

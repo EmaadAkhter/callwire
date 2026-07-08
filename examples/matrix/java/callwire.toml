@@ -1,0 +1,15 @@
+# callwire.toml — Java matrix example
+# ────────────────────────────────────────────────────────────
+# MatrixExportJava is the long-running worker (registered as a service below).
+# MatrixImportJava is a one-shot client script, not a persistent service —
+# run it manually after the export workers you want to test are up:
+#   java -cp .:../../../java/target/classes:<msgpack-core.jar> MatrixImportJava
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-java"
+version = "1.0.0"
+
+[services.java-matrix-export]
+dev_cmd  = "java -cp .:../../../java/target/classes:$(find ~/.m2 -name 'msgpack-core*.jar' | head -1) MatrixExportJava"
+prod_cmd = "java -cp .:../../../java/target/classes:$(find ~/.m2 -name 'msgpack-core*.jar' | head -1) MatrixExportJava"

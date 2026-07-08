@@ -1,0 +1,15 @@
+# callwire.toml — Python matrix example
+# ────────────────────────────────────────────────────────────
+# export_python.py is the long-running worker (registered as a service below).
+# import_python.py is a one-shot client script, not a persistent service —
+# run it manually after the export workers you want to test are up:
+#   python3 import_python.py
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-python"
+version = "1.0.0"
+
+[services.python-matrix-export]
+dev_cmd  = "python3 export_python.py"
+prod_cmd = "python3 export_python.py"

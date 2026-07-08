@@ -1,0 +1,20 @@
+# callwire.toml — C matrix example
+# ────────────────────────────────────────────────────────────
+# export_c is the long-running worker (registered as a service below).
+# import_c is a one-shot client script, not a persistent service — run it
+# manually after the export workers you want to test are up.
+#
+# Build both first (see cobol/README.md-style build notes — this dir has
+# no build.sh yet, compile directly):
+#   gcc -std=c99 -pthread -I../../../c/include -c ../../../c/src/{codec,framing,client,server,errors,convenience}.c -o /tmp/matrixc_*.o
+#   gcc -pthread -I../../../c/include /tmp/matrixc_*.o export_c.c -o export_c
+#   gcc -pthread -I../../../c/include /tmp/matrixc_*.o import_c.c -o import_c
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-c"
+version = "1.0.0"
+
+[services.c-matrix-export]
+dev_cmd  = "./export_c"
+prod_cmd = "./export_c"

@@ -1,0 +1,27 @@
+# callwire.toml — COBOL matrix example
+# ────────────────────────────────────────────────────────────
+# export_cobol is the long-running worker (registered as a service below).
+# import_cobol is a one-shot client script, not a persistent service — run
+# it manually after the export workers you want to test are up.
+#
+# Build both (requires GnuCOBOL, `brew install gnucobol`):
+#   gcc -c -std=c99 -I../../../c/include -I/opt/homebrew/include \
+#     ../../../cobol/src/cobol_shim.c -o /tmp/matrixcobol_shim.o
+#   for f in codec framing client server errors; do
+#     gcc -std=c99 -pthread -I../../../c/include -c ../../../c/src/$f.c -o /tmp/matrixcobol_$f.o
+#   done
+#   cobc -m handlers/add_handler.cob -o /tmp/matrix_cobol_handlers/add-handler.dylib
+#   cobc -x export_cobol.cob -o export_cobol /tmp/matrixcobol_*.o -lpthread
+#   cobc -x import_cobol.cob -o import_cobol /tmp/matrixcobol_*.o -lpthread
+#
+# Run the server with COB_LIBRARY_PATH pointing at the handler modules:
+#   COB_LIBRARY_PATH=/tmp/matrix_cobol_handlers ./export_cobol
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix-cobol"
+version = "1.0.0"
+
+[services.cobol-matrix-export]
+dev_cmd  = "COB_LIBRARY_PATH=/tmp/matrix_cobol_handlers ./export_cobol"
+prod_cmd = "COB_LIBRARY_PATH=/tmp/matrix_cobol_handlers ./export_cobol"
