@@ -232,6 +232,52 @@ int callwire_server_export_ctx(callwire_server_t *server, const char *func, void
     static int64_t NAME##_body(int64_t A, int64_t B, int64_t C)
 
 /**
+ * Streaming server handlers: rather than returning a single value, these
+ * receive an emit and/or recv callback to produce/consume multiple chunks
+ * over the lifetime of one call. Each streaming call runs on its own thread
+ * internally (the accept-loop thread keeps reading frames for other calls
+ * concurrently) — emit()/recv() are safe to call from that handler thread.
+ */
+
+/** Called by a server-streaming/bidi handler to send one chunk to the client.
+ *  Returns 0 on success, -1 on write failure (stop emitting further chunks). */
+typedef int (*callwire_stream_emit_fn)(void *emit_ctx, callwire_value_t *chunk);
+
+/** Called by a client-streaming/bidi handler to receive the next chunk from
+ *  the client. Returns 0 if chunk_out was filled, 1 if the client is done
+ *  sending (clean end), -1 on error. */
+typedef int (*callwire_stream_recv_fn)(void *recv_ctx, callwire_value_t *chunk_out);
+
+/**
+ * Register a server-streaming handler: single request, multiple emitted
+ * chunks, then done. fn_ptr is called with (userdata, args, args_count,
+ * emit, emit_ctx) — call emit(emit_ctx, &chunk) once per chunk, return 0
+ * when finished (server sends stream_end) or non-zero on error.
+ */
+int callwire_server_export_stream_ctx(callwire_server_t *server, const char *func, void *userdata,
+                                      int (*fn_ptr)(void *userdata, callwire_value_t *args, size_t args_count,
+                                                     callwire_stream_emit_fn emit, void *emit_ctx));
+
+/**
+ * Register a client-streaming handler: multiple received chunks, single
+ * result. fn_ptr is called with (userdata, recv, recv_ctx, result_out) —
+ * call recv(recv_ctx, &chunk) in a loop until it returns 1 (client done),
+ * write the final value to *result_out, return 0 on success.
+ */
+int callwire_server_export_client_stream_ctx(callwire_server_t *server, const char *func, void *userdata,
+                                             int (*fn_ptr)(void *userdata, callwire_stream_recv_fn recv, void *recv_ctx,
+                                                            callwire_value_t *result_out));
+
+/**
+ * Register a bidi-streaming handler: concurrent receive and emit. fn_ptr is
+ * called with (userdata, recv, recv_ctx, emit, emit_ctx) — call recv()/emit()
+ * in any order/interleaving, return 0 when done (server sends stream_end).
+ */
+int callwire_server_export_bidi_ctx(callwire_server_t *server, const char *func, void *userdata,
+                                    int (*fn_ptr)(void *userdata, callwire_stream_recv_fn recv, void *recv_ctx,
+                                                   callwire_stream_emit_fn emit, void *emit_ctx));
+
+/**
  * Start accepting connections (blocks until error or close).
  */
 int callwire_server_serve(callwire_server_t *server);

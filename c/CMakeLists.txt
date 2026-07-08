@@ -89,3 +89,8 @@ add_executable(test_convenience tests/test_convenience.c src/codec.c src/framing
 target_include_directories(test_convenience PRIVATE include)
 target_link_libraries(test_convenience PRIVATE Threads::Threads)
 add_test(NAME convenience COMMAND test_convenience)
+
+add_executable(test_streaming tests/test_streaming.c src/codec.c src/framing.c src/client.c src/server.c src/errors.c)
+target_include_directories(test_streaming PRIVATE include)
+target_link_libraries(test_streaming PRIVATE Threads::Threads)
+add_test(NAME streaming COMMAND test_streaming)
