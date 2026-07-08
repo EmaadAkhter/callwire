@@ -70,6 +70,7 @@ yarn.lock
 pnpm-lock.yaml
 # Environment
 .env
+.pypirc
 .env.local
 .env.*.local
 
