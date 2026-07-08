@@ -51,8 +51,12 @@ if(CALLWIRE_WITH_TLS)
 endif()
 set_target_properties(callwire_core_shared PROPERTIES OUTPUT_NAME callwire_core)
 
+# callwire init CLI — scans the repo for worker directories and generates
+# callwire.toml, matching the CLI shipped with every other SDK.
+add_executable(callwire src/cli.c)
+
 # Install targets.
-install(TARGETS callwire_core_static callwire_core_shared
+install(TARGETS callwire_core_static callwire_core_shared callwire
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
         RUNTIME DESTINATION bin)

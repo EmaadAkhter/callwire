@@ -37,6 +37,8 @@ public class Main {
         scanForWorkers(root, toml, "ts", "TypeScript", "cd ts && npx tsx src/server.ts");
         // Scan for Java workers
         scanForWorkers(root, toml, "java", "Java", "cd java && mvn exec:java@server");
+        // Scan for C workers
+        scanForWorkers(root, toml, "c", "C", "cd c/build && ./server");
 
         Path configFile = Paths.get("callwire.toml");
         Files.write(configFile, toml.toString().getBytes());
