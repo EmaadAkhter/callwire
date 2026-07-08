@@ -1,0 +1,68 @@
+# callwire.toml — cross-language matrix (aggregator)
+# ────────────────────────────────────────────────────────────
+# One `callwire.init()` call from THIS directory spawns all 9 export
+# servers as child processes — that's the entire point of orchestration,
+# not "open 9 terminals and start each one by hand."
+#
+#   PYTHONPATH=../../python python3 -c "import callwire; callwire.init(); input('press enter to stop\n'); callwire.shutdown()"
+#
+# (any language's init()/orchestrator reads this same file — Python's is
+# shown since it's the simplest one-liner; Go/Rust/TS's callwire.toml-driven
+# init() work identically, see the root README's Orchestration section)
+#
+# Once every server is up, run any ONE import script (from its own folder)
+# to call all the others — best-effort, prints SKIP for whichever aren't
+# ready yet rather than failing outright:
+#   cd python && python3 import_python.py
+#
+# Compiled languages (go/rust/java/c/cpp/swift/cobol) need their binaries
+# built once first — this file's dev_cmd assumes the binaries documented in
+# each language's own callwire.toml already exist. Build them with:
+#   (cd go    && go build -o export_go export_go.go)
+#   (cd rust  && cargo build --bin export_rust)
+#   (cd java  && javac -cp .:../../../java/target/classes:<msgpack-core.jar> MatrixExportJava.java -d .)
+#   (cd c     && <see c/callwire.toml build comment>)
+#   (cd cpp   && <see cpp/callwire.toml build comment>)
+#   (cd swift && <see swift/callwire.toml build comment>)
+#   (cd cobol && <see cobol/callwire.toml build comment>)
+# ────────────────────────────────────────────────────────────
+
+[project]
+name = "callwire-matrix"
+version = "1.0.0"
+
+[services.go-matrix-export]
+dev_cmd  = "cd go && ./export_go"
+prod_cmd = "cd go && ./export_go"
+
+[services.python-matrix-export]
+dev_cmd  = "cd python && python3 export_python.py"
+prod_cmd = "cd python && python3 export_python.py"
+
+[services.rust-matrix-export]
+dev_cmd  = "cd rust && ./target/debug/export_rust"
+prod_cmd = "cd rust && ./target/release/export_rust"
+
+[services.ts-matrix-export]
+dev_cmd  = "cd ts && npx tsx export_ts.ts"
+prod_cmd = "cd ts && node dist/export_ts.js"
+
+[services.java-matrix-export]
+dev_cmd  = "cd java && java -cp .:../../../java/target/classes:$(find ~/.m2 -name 'msgpack-core*.jar' | head -1) MatrixExportJava"
+prod_cmd = "cd java && java -cp .:../../../java/target/classes:$(find ~/.m2 -name 'msgpack-core*.jar' | head -1) MatrixExportJava"
+
+[services.c-matrix-export]
+dev_cmd  = "cd c && ./export_c"
+prod_cmd = "cd c && ./export_c"
+
+[services.cpp-matrix-export]
+dev_cmd  = "cd cpp && ./export_cpp"
+prod_cmd = "cd cpp && ./export_cpp"
+
+[services.swift-matrix-export]
+dev_cmd  = "cd swift && ./export_swift"
+prod_cmd = "cd swift && ./export_swift"
+
+[services.cobol-matrix-export]
+dev_cmd  = "cd cobol && COB_LIBRARY_PATH=/tmp/matrix_cobol_handlers ./export_cobol"
+prod_cmd = "cd cobol && COB_LIBRARY_PATH=/tmp/matrix_cobol_handlers ./export_cobol"
