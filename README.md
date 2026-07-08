@@ -1,17 +1,17 @@
 # Callwire
 
-**High-performance, bidirectional RPC across 12+ languages — Go, Python, Rust, TypeScript, Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby — over raw TCP with MessagePack framing.**
+**Callwire v2.1.0: High-performance, bidirectional RPC across 5 languages (Go, Python, Rust, TypeScript, Java) — over raw TCP with MessagePack framing. Roadmap: 12+ languages.**
 
-No schemas. No `.proto` files. No codegen. Export a function, call it from anywhere. All 4 gRPC streaming patterns, zero config.
+No schemas. No `.proto` files. No codegen. Export a function, call it from anywhere. **All 4 gRPC streaming patterns (unary, server-streaming, client-streaming, bidirectional), zero config.**
 
 ---
 
 ## Features
 
 - **Zero-schema RPC** — export any function, call it from any language
-- **All 4 gRPC patterns** — unary, server-streaming, client-streaming, bidirectional-streaming (no `.proto` codegen)
+- **All 4 gRPC patterns** — unary, server-streaming, client-streaming, bidirectional-streaming (full parity with gRPC, no `.proto` codegen)
 - **Bidirectional** — clients and servers call each other over the same socket
-- **12+ languages** — Go, Python, Rust, TypeScript (done); Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby (in progress)
+- **5 languages shipped** — Go, Python, Rust, TypeScript, Java (all 4 patterns). Roadmap: C, C++, COBOL, C#, Kotlin, Swift, Ruby, and more
 - **v3 Orchestration** — one `callwire.toml` spawns and connects workers automatically
 - **Dynamic routing** — connect to registry, call any function without knowing worker addresses
 - **TLS & mTLS** — secure transport with optional client certificate auth
@@ -76,15 +76,36 @@ await server.serve('0.0.0.0', 9090);
 const result = await remote.add(10, 20); // 30
 ```
 
+### Java
+
+```java
+import dev.callwire.core.*;
+
+// 1. Export a function
+Server server = new Server();
+server.export("add", args -> {
+    long a = ((Number) args.get(0)).longValue();
+    long b = ((Number) args.get(1)).longValue();
+    return a + b;
+});
+server.serve("localhost", 9090);
+
+// 2. Call a remote function
+Client client = new Client();
+client.connect("localhost", 9090);
+Object result = client.call("add", Arrays.asList(10L, 20L)); // 30
+```
+
 ---
 
 ## Installation & Publishing
 
-- **npm**: `npm install -g @emaad-ansari/callwire` (latest version 2.0.3)
-- **cargo**: `cargo install callwire --version 2.0.3`
-- **pip**: `pip install callwire==2.0.3`
+- **npm**: `npm install @emaad-ansari/callwire` (v2.1.0)
+- **PyPI**: `pip install callwire==2.1.0`
+- **Cargo**: `cargo add callwire --version 2.1.0`
+- **Maven Central**: `dev.callwire:callwire:2.1.0`
 
-These packages are automatically published on each release via the CI workflow.
+All packages auto-publish via CI workflow on version bump.
 
 ## Orchestration (v2)
 
