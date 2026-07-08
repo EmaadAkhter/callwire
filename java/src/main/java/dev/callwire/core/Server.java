@@ -16,10 +16,24 @@ public class Server {
         StreamMarker(Iterator<Object> iter) { this.iter = iter; }
     }
 
-    private final Map<String, Handler> registry = new ConcurrentHashMap<>();
+    private static class ClientStreamMarker {
+        final ClientStreamHandler handler;
+        ClientStreamMarker(ClientStreamHandler handler) { this.handler = handler; }
+    }
+
+    private static class BidiMarker {
+        final BidiHandler handler;
+        BidiMarker(BidiHandler handler) { this.handler = handler; }
+    }
+
+    /** Sentinel placed on a streaming-input queue to signal end of input. */
+    private static final Object STREAM_INPUT_END = new Object();
+
+    private final Map<String, Object> registry = new ConcurrentHashMap<>();
     private ServerSocket serverSocket;
     private volatile boolean running = false;
     private ExecutorService threadPool = Executors.newFixedThreadPool(16);
+    private ExecutorService streamWorkers = Executors.newCachedThreadPool();
 
     public interface Handler {
         Object handle(List<Object> args) throws Exception;
@@ -29,12 +43,30 @@ public class Server {
         Iterator<Object> handle(List<Object> args) throws Exception;
     }
 
+    /** Client-streaming: receives an iterator of incoming chunks, returns a single response. */
+    public interface ClientStreamHandler {
+        Object handle(Iterator<Object> chunks) throws Exception;
+    }
+
+    /** Bidi-streaming: receives an iterator of incoming chunks, returns an iterator of outgoing chunks. */
+    public interface BidiHandler {
+        Iterator<Object> handle(Iterator<Object> chunks) throws Exception;
+    }
+
     public void export(String funcName, Handler handler) {
         registry.put(funcName, handler);
     }
 
     public void exportStream(String funcName, StreamHandler handler) {
         registry.put(funcName, (Handler) args -> new StreamMarker(handler.handle(args)));
+    }
+
+    public void exportClientStream(String funcName, ClientStreamHandler handler) {
+        registry.put(funcName, new ClientStreamMarker(handler));
+    }
+
+    public void exportBidi(String funcName, BidiHandler handler) {
+        registry.put(funcName, new BidiMarker(handler));
     }
 
     public void serve(String host, int port) throws IOException {
@@ -57,17 +89,41 @@ public class Server {
     }
 
     private void handleConnection(Socket conn) {
+        // Tracks in-progress client-streaming/bidi calls: id -> input queue.
+        Map<Long, BlockingQueue<Object>> streamInputs = new ConcurrentHashMap<>();
         try {
             while (running) {
                 byte[] payload = Framing.readFrame(conn);
                 Map<String, Object> msg = Codec.decode(payload);
-                dispatch(conn, msg);
+                String type = (String) msg.get("type");
+                long id = ((Number) msg.get("id")).longValue();
+
+                if ("stream_chunk".equals(type) || "stream_close".equals(type) || "stream_end".equals(type)) {
+                    BlockingQueue<Object> q = streamInputs.get(id);
+                    if (q != null) {
+                        if ("stream_chunk".equals(type)) {
+                            q.offer(msg.get("result"));
+                        } else {
+                            q.offer(STREAM_INPUT_END);
+                            streamInputs.remove(id);
+                        }
+                    }
+                    continue;
+                }
+
+                dispatch(conn, msg, streamInputs);
             }
         } catch (EOFException e) {
             // Connection closed
         } catch (IOException e) {
             // Log error
         } finally {
+            // Unblock any handler still waiting on input from a call that never
+            // sent stream_close/stream_end before the connection dropped.
+            for (BlockingQueue<Object> q : streamInputs.values()) {
+                q.offer(STREAM_INPUT_END);
+            }
+            streamInputs.clear();
             try {
                 conn.close();
             } catch (IOException e) {
@@ -76,7 +132,7 @@ public class Server {
         }
     }
 
-    private void dispatch(Socket conn, Map<String, Object> msg) throws IOException {
+    private void dispatch(Socket conn, Map<String, Object> msg, Map<Long, BlockingQueue<Object>> streamInputs) throws IOException {
         long id = ((Number) msg.get("id")).longValue();
         String type = (String) msg.get("type");
 
@@ -87,15 +143,44 @@ public class Server {
         String func = (String) msg.get("func");
         Object argsObj = msg.get("args");
         List<Object> args = argsObj instanceof List ? (List<Object>) argsObj : new ArrayList<>();
+        boolean isBidi = Boolean.TRUE.equals(msg.get("stream"));
 
-        Handler handler = registry.get(func);
-        if (handler == null) {
+        Object entry = registry.get(func);
+        if (entry == null) {
             byte[] error = Codec.encodeError(id, "NotFoundError",
                     "Function '" + func + "' not exported");
-            Framing.writeFrame(conn, error);
+            synchronized (conn) {
+                Framing.writeFrame(conn, error);
+            }
             return;
         }
 
+        if (entry instanceof ClientStreamMarker && !isBidi) {
+            BlockingQueue<Object> q = new LinkedBlockingQueue<>();
+            streamInputs.put(id, q);
+            ClientStreamHandler handler = ((ClientStreamMarker) entry).handler;
+            streamWorkers.execute(() -> runClientStreamHandler(conn, id, handler, q));
+            return;
+        }
+
+        if (entry instanceof BidiMarker && isBidi) {
+            BlockingQueue<Object> q = new LinkedBlockingQueue<>();
+            streamInputs.put(id, q);
+            BidiHandler handler = ((BidiMarker) entry).handler;
+            streamWorkers.execute(() -> runBidiHandler(conn, id, handler, q));
+            return;
+        }
+
+        if (!(entry instanceof Handler)) {
+            byte[] error = Codec.encodeError(id, "TypeError",
+                    "Function '" + func + "' registered for a different call pattern");
+            synchronized (conn) {
+                Framing.writeFrame(conn, error);
+            }
+            return;
+        }
+
+        Handler handler = (Handler) entry;
         try {
             Object result = handler.handle(args);
 
@@ -105,20 +190,111 @@ public class Server {
                 while (iter.hasNext()) {
                     Object chunk = iter.next();
                     byte[] payload = Codec.encodeStreamChunk(id, chunk);
-                    Framing.writeFrame(conn, payload);
+                    synchronized (conn) {
+                        Framing.writeFrame(conn, payload);
+                    }
                 }
                 byte[] end = Codec.encodeStreamEnd(id);
-                Framing.writeFrame(conn, end);
+                synchronized (conn) {
+                    Framing.writeFrame(conn, end);
+                }
             } else {
                 // Unary response
                 byte[] response = Codec.encodeResponse(id, result);
-                Framing.writeFrame(conn, response);
+                synchronized (conn) {
+                    Framing.writeFrame(conn, response);
+                }
             }
         } catch (Exception e) {
             String errorType = "Error";
             String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             byte[] error = Codec.encodeError(id, errorType, message);
-            Framing.writeFrame(conn, error);
+            synchronized (conn) {
+                Framing.writeFrame(conn, error);
+            }
+        }
+    }
+
+    private static Iterator<Object> queueIterator(BlockingQueue<Object> q) {
+        return new Iterator<Object>() {
+            private Object next;
+            private boolean done = false;
+            private boolean fetched = false;
+
+            private void fetch() {
+                if (fetched || done) return;
+                try {
+                    Object v = q.take();
+                    if (v == STREAM_INPUT_END) {
+                        done = true;
+                    } else {
+                        next = v;
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    done = true;
+                }
+                fetched = true;
+            }
+
+            @Override
+            public boolean hasNext() {
+                fetch();
+                return !done;
+            }
+
+            @Override
+            public Object next() {
+                fetch();
+                if (done) throw new NoSuchElementException();
+                fetched = false;
+                return next;
+            }
+        };
+    }
+
+    private void runClientStreamHandler(Socket conn, long id, ClientStreamHandler handler, BlockingQueue<Object> q) {
+        try {
+            Object result = handler.handle(queueIterator(q));
+            byte[] response = Codec.encodeResponse(id, result);
+            synchronized (conn) {
+                Framing.writeFrame(conn, response);
+            }
+        } catch (Exception e) {
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            try {
+                byte[] error = Codec.encodeError(id, "Error", message);
+                synchronized (conn) {
+                    Framing.writeFrame(conn, error);
+                }
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private void runBidiHandler(Socket conn, long id, BidiHandler handler, BlockingQueue<Object> q) {
+        try {
+            Iterator<Object> out = handler.handle(queueIterator(q));
+            while (out.hasNext()) {
+                Object chunk = out.next();
+                byte[] payload = Codec.encodeStreamChunk(id, chunk);
+                synchronized (conn) {
+                    Framing.writeFrame(conn, payload);
+                }
+            }
+            byte[] end = Codec.encodeStreamEnd(id);
+            synchronized (conn) {
+                Framing.writeFrame(conn, end);
+            }
+        } catch (Exception e) {
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            try {
+                byte[] error = Codec.encodeError(id, "Error", message);
+                synchronized (conn) {
+                    Framing.writeFrame(conn, error);
+                }
+            } catch (IOException ignored) {
+            }
         }
     }
 
@@ -128,5 +304,6 @@ public class Server {
             serverSocket.close();
         }
         threadPool.shutdown();
+        streamWorkers.shutdown();
     }
 }
