@@ -15,6 +15,7 @@
  * + arbitrary-nested-value ABI the other SDKs expose.
  */
 #include "../../c/include/callwire.h"
+#include <libcob.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -111,4 +112,142 @@ int callwire_cobol_call_str(void *client, const char *func, const char *arg,
 
 const char *callwire_cobol_last_error(void) {
     return callwire_error();
+}
+
+/* ---------------------------------------------------------------------- */
+/* Server-side export: register a COBOL subprogram as an RPC handler.     */
+/*                                                                         */
+/* Design: rather than passing a raw ADDRESS OF <paragraph> function       */
+/* pointer from COBOL (untested territory — GnuCOBOL entry-point calling  */
+/* convention details, stack setup expectations, etc.), the handler is a  */
+/* SEPARATE COBOL subprogram compiled as its own dynamically-loadable      */
+/* module (PROGRAM-ID X, `cobc -m`), and this shim registers it by NAME,  */
+/* dispatching through libcob's own cob_call() — the same mechanism        */
+/* GnuCOBOL itself uses for dynamic CALLs. Verified working end-to-end     */
+/* (real TCP round trip, C++ client -> COBOL server, see                  */
+/* cobol/tests/test_server.cob) before committing to this shape over the  */
+/* address-of approach originally sketched in planning.                   */
+/*                                                                         */
+/* GOTCHA (cost real debugging time — worth flagging): libcob's dynamic    */
+/* module loader matches the compiled .dylib's BASENAME against the       */
+/* CALLed name, lowercased, with dashes PRESERVED (not converted to        */
+/* underscores). PROGRAM-ID ADD-HANDLER compiled via `cobc -m` must be     */
+/* output as `add-handler.dylib` (dash), not `add_handler.dylib`           */
+/* (underscore) — the latter fails with "module 'ADD-HANDLER' not found"   */
+/* even though the file exists and cob_init() succeeded. The module must   */
+/* also be on COB_LIBRARY_PATH at runtime (or preloaded via COB_PRELOAD).  */
+/* ---------------------------------------------------------------------- */
+
+static int cobol_runtime_initialized = 0;
+static void ensure_cob_init(void) {
+    if (!cobol_runtime_initialized) {
+        cob_init(0, NULL);
+        cobol_runtime_initialized = 1;
+    }
+}
+
+typedef struct {
+    char program_name[64];
+} cobol_handler_ctx_t;
+
+/* Handler: COBOL subprogram signature `PROCEDURE DIVISION USING A B RESULT`
+ * with A, B, RESULT all PIC S9(18) COMP-5 (int64). */
+static int cobol_int2_trampoline(void *userdata, callwire_value_t *args, size_t argc, callwire_value_t *result_out) {
+    cobol_handler_ctx_t *ctx = (cobol_handler_ctx_t *)userdata;
+    if (argc != 2 || args[0].type != CALLWIRE_INT64 || args[1].type != CALLWIRE_INT64) {
+        return -1;
+    }
+
+    int64_t a = args[0].val.int_val;
+    int64_t b = args[1].val.int_val;
+    int64_t result = 0;
+    void *cob_args[3] = { &a, &b, &result };
+
+    int rc = cob_call(ctx->program_name, 3, cob_args);
+    if (rc != 0) {
+        return -1;
+    }
+
+    result_out->type = CALLWIRE_INT64;
+    result_out->val.int_val = result;
+    return 0;
+}
+
+/* Handler: COBOL subprogram signature `PROCEDURE DIVISION USING NAME RESULT`
+ * with NAME/RESULT both PIC X(N) — fixed-size, space-padded (not null-
+ * terminated; COBOL native string convention). Fixed at 256 bytes each,
+ * matching the buffer sizes documented in cobol/README.md. */
+static int cobol_str1_trampoline(void *userdata, callwire_value_t *args, size_t argc, callwire_value_t *result_out) {
+    cobol_handler_ctx_t *ctx = (cobol_handler_ctx_t *)userdata;
+    if (argc != 1 || args[0].type != CALLWIRE_STRING) {
+        return -1;
+    }
+
+    char in_buf[256];
+    memset(in_buf, ' ', sizeof(in_buf));
+    size_t copy_len = args[0].val.str_val.len;
+    if (copy_len > sizeof(in_buf)) copy_len = sizeof(in_buf);
+    memcpy(in_buf, args[0].val.str_val.data, copy_len);
+
+    char out_buf[256];
+    memset(out_buf, ' ', sizeof(out_buf));
+    void *cob_args[2] = { in_buf, out_buf };
+
+    int rc = cob_call(ctx->program_name, 2, cob_args);
+    if (rc != 0) {
+        return -1;
+    }
+
+    /* Trim trailing spaces (COBOL PIC X convention) before returning. */
+    size_t out_len = sizeof(out_buf);
+    while (out_len > 0 && out_buf[out_len - 1] == ' ') out_len--;
+
+    char *heap_str = malloc(out_len + 1);
+    memcpy(heap_str, out_buf, out_len);
+    heap_str[out_len] = '\0';
+
+    result_out->type = CALLWIRE_STRING;
+    result_out->val.str_val.data = heap_str;
+    result_out->val.str_val.len = out_len;
+    return 0;
+}
+
+int callwire_cobol_export_int2(void *server, const char *func, const char *cobol_program_name) {
+    if (!server || !func || !cobol_program_name) {
+        return -1;
+    }
+    ensure_cob_init();
+
+    cobol_handler_ctx_t *ctx = malloc(sizeof(cobol_handler_ctx_t));
+    if (!ctx) return -1;
+    strncpy(ctx->program_name, cobol_program_name, sizeof(ctx->program_name) - 1);
+    ctx->program_name[sizeof(ctx->program_name) - 1] = '\0';
+
+    return callwire_server_export_ctx((callwire_server_t *)server, func, ctx, cobol_int2_trampoline);
+}
+
+int callwire_cobol_export_str1(void *server, const char *func, const char *cobol_program_name) {
+    if (!server || !func || !cobol_program_name) {
+        return -1;
+    }
+    ensure_cob_init();
+
+    cobol_handler_ctx_t *ctx = malloc(sizeof(cobol_handler_ctx_t));
+    if (!ctx) return -1;
+    strncpy(ctx->program_name, cobol_program_name, sizeof(ctx->program_name) - 1);
+    ctx->program_name[sizeof(ctx->program_name) - 1] = '\0';
+
+    return callwire_server_export_ctx((callwire_server_t *)server, func, ctx, cobol_str1_trampoline);
+}
+
+void *callwire_cobol_server_new(const char *addr, int port) {
+    return callwire_server_new(addr, port);
+}
+
+int callwire_cobol_server_serve(void *server) {
+    return callwire_server_serve((callwire_server_t *)server);
+}
+
+void callwire_cobol_server_close(void *server) {
+    if (server) callwire_server_close((callwire_server_t *)server);
 }
