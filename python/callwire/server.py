@@ -1,12 +1,14 @@
 import atexit
 import inspect
 import os
+import queue
 import socket
 import ssl
 import threading
+import time
 
 from .framing import read_frame, write_frame
-from .codec import pack_response, pack_error, pack_stream_chunk, pack_stream_end, unpack
+from .codec import pack_response, pack_error, pack_stream_chunk, pack_stream_end, pack_stream_close, unpack
 from .errors import exception_to_wire
 
 _registry = {}
@@ -129,15 +131,110 @@ def _start_listener(host, port, tls=None):
 
 
 def _handle_connection(conn):
+    streams = {}  # id -> queue for streaming calls
     try:
         while True:
             payload = read_frame(conn)
             msg = unpack(payload)
+
+            # Route streaming messages to pending streams
+            msg_type = msg.get("type")
+            if msg_type in ("stream_chunk", "stream_close", "stream_end"):
+                msg_id = msg["id"]
+                if msg_id in streams:
+                    streams[msg_id].put(msg)
+                    if msg_type in ("stream_close", "stream_end"):
+                        # Don't keep stream pending after close/end from client
+                        pass
+                    continue
+
+            # New request: set up stream state if needed, then dispatch
+            if msg.get("type") == "request":
+                msg_id = msg["id"]
+                func_name = msg.get("func")
+                fn = _registry.get(func_name)
+
+                # Check if this will be client-streaming or bidi-streaming
+                is_bidi = msg.get("stream", False)
+                if fn and _expects_stream_input(fn):
+                    # Set up stream for this call
+                    q = queue.Queue(maxsize=256)
+                    streams[msg_id] = q
+                    threading.Thread(
+                        target=_dispatch_streaming,
+                        args=(conn, msg, q, streams, is_bidi),
+                        daemon=True
+                    ).start()
+                    continue
+
+            # Unary call
             _dispatch(conn, msg)
-    except ConnectionError:
+    except (ConnectionError, EOFError):
         pass
     finally:
         conn.close()
+
+
+def _expects_stream_input(fn):
+    """Check if function expects a stream (generator/iterable input)."""
+    if not inspect.isfunction(fn) and not inspect.ismethod(fn):
+        return False
+    sig = inspect.signature(fn)
+    params = list(sig.parameters.values())
+    if not params:
+        return False
+    # First param has a type hint that looks like a stream/iterable
+    first_param = params[0]
+    if first_param.annotation == inspect.Parameter.empty:
+        return False
+    ann_str = str(first_param.annotation)
+    return "Iterator" in ann_str or "Iterable" in ann_str or "AsyncIterator" in ann_str
+
+
+def _dispatch_streaming(conn, msg, q: queue.Queue, streams, is_bidi):
+    """Dispatch a streaming call (client-stream or bidi). Runs in background thread."""
+    msg_id = msg["id"]
+    func_name = msg.get("func")
+    fn = _registry.get(func_name)
+
+    if not fn:
+        write_frame(conn, pack_error(msg_id, "NotFoundError", f"function '{func_name}' not exported"))
+        streams.pop(msg_id, None)
+        return
+
+    try:
+        # Create an iterator that drains the queue until stream_close or stream_end
+        chunks = _stream_iterator(q, msg_id, is_bidi)
+        result = fn(chunks)
+        write_frame(conn, pack_response(msg_id, result))
+    except Exception as e:
+        error_type, message = exception_to_wire(e)
+        write_frame(conn, pack_error(msg_id, error_type, message))
+    finally:
+        streams.pop(msg_id, None)
+
+
+def _stream_iterator(q: queue.Queue, msg_id, is_bidi):
+    """Iterator that yields chunks from queue until stream_close or stream_end."""
+    while True:
+        try:
+            msg = q.get(timeout=30.0)
+        except queue.Empty:
+            return
+
+        msg_type = msg.get("type")
+        if msg_type == "stream_chunk":
+            yield msg.get("result")
+        elif msg_type == "stream_close":
+            # Client-streaming: close received, stop iterating
+            return
+        elif msg_type == "stream_end":
+            # Bidi-streaming: client done sending
+            if is_bidi:
+                # For bidi, don't return yet—client_close_send() was called
+                # Server should keep processing
+                pass
+            return
 
 
 def _dispatch(conn, msg):
