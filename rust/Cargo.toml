@@ -34,15 +34,15 @@ path = "examples/cross_lang_client.rs"
 serde = { version = "1.0", features = ["derive"] }
 rmp-serde = "1.1"
 rmpv = { version = "1.0", features = ["with-serde"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.32", features = ["full"] }
 thiserror = "2.0"
 futures-util = "0.3"
 bytes = "1.5"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls = "0.22"
 rustls-pemfile = "2"
 toml = "0.8.1"
-anyhow = "1.0"
+zeroize = "1.5.7"
 libc = "0.2"
 
 [dev-dependencies]
