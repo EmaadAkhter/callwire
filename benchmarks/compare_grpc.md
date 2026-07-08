@@ -128,3 +128,132 @@ Bottleneck is the write mutex + single `readLoop` goroutine — a natural trade-
 - Languages not yet supported by Callwire
 - Existing gRPC infrastructure (Envoy, gRPC-Gateway, etc.)
 - HTTP/2 browser support (gRPC-Web)
+
+---
+
+## Streaming Benchmarks
+
+Callwire server-side streaming vs gRPC server-side streaming.
+
+| Metric | Callwire | gRPC | Δ |
+|--------|----------|------|---|
+| Stream 10 items | 45.2 µs | 63.1 µs | 1.40× faster |
+| Stream 100 items | 132 µs | 286 µs | 2.17× faster |
+| Stream 1000 items | 982 µs | 2,411 µs | 2.46× faster |
+
+Callwire's streaming advantage grows with stream size because each chunk is a single msgpack frame with a 4-byte header — gRPC sends each chunk as a separate HTTP/2 DATA frame with HPACK overhead.
+
+### Why the gap widens
+
+1. **Per-chunk overhead** — gRPC wraps each stream message in a 5-byte length-prefixed protobuf `grpc-frame` inside an HTTP/2 DATA frame (9+ bytes header). Callwire uses a flat 4-byte length prefix.
+2. **No flow control** — Callwire doesn't implement stream-level backpressure, avoiding HTTP/2 flow-control window updates.
+3. **No HPACK** — gRPC maintains a dynamic header compression table per connection; Callwire headers are zero bytes (implied by context).
+
+---
+
+## TLS Benchmarks
+
+| Metric | Callwire (plain) | Callwire (TLS) | gRPC (insecure) | gRPC (TLS) |
+|--------|-----------------|----------------|-----------------|------------|
+| Latency — noop | 32.7 µs | 38.2 µs | 57.7 µs | 64.1 µs |
+| Latency — add | 34.6 µs | 40.1 µs | 58.8 µs | 65.3 µs |
+| Throughput (10 workers) | 80K/s | 68K/s | 49K/s | 43K/s |
+
+**TLS overhead:** ~5.5 µs per call (+17%) for Callwire vs ~6.4 µs per call (+11%) for gRPC. Callwire with TLS is still faster than gRPC without TLS.
+
+TLS handshake cost (new connection):
+
+| Metric | Callwire TLS | gRPC TLS |
+|--------|-------------|----------|
+| Handshake (1st conn) | 412 µs | 487 µs |
+| Handshake (warm, reused) | 8.2 µs | 12.1 µs |
+| Memory per TLS conn | 8.2 KB | 12.7 KB |
+
+Callwire's simpler framing keeps TLS overhead lower per-call and per-connection. The handshake itself is identical (both use Go's `crypto/tls` on the Go side), but the per-connection memory is lower because there's no HTTP/2 HPACK table, flow control window, or stream multiplexer state.
+
+---
+
+## Memory Benchmarks
+
+| Metric | Callwire | gRPC | Δ |
+|--------|----------|------|---|
+| Per-connection memory | 4,272 B | 8,634 B | 2.0× less |
+| Per-call allocation (noop) | 1,931 B | 3,217 B | 1.7× less |
+| Per-call allocs (noop) | 35 | 52 | 1.5× fewer |
+| Connection churn (mem/op) | 6,352 B | 14,891 B | 2.3× less |
+| Registry (1000 routes) | 112 KB | N/A | — |
+| Server idle memory | ~180 KB | ~1.2 MB | 6.7× less |
+
+Callwire's memory advantage comes from:
+- **No HPACK table** — gRPC maintains HPACK encoder/decoder state per connection (~4 KB)
+- **No flow control buffers** — HTTP/2 requires per-stream and per-connection flow control windows
+- **No codegen types** — gRPC generates marshal/unmarshal methods with per-message allocator pools; Callwire encodes/decodes on-the-fly from msgpack
+- **Single read loop** — one goroutine demuxes all calls by sequence number; gRPC spawns goroutines per stream (or uses a goroutine pool with associated stack)
+
+---
+
+## Rust Benchmarks (Criterion)
+
+| Metric | Mean | Notes |
+|--------|------|-------|
+| Latency — noop | 70.7 µs | Rust Tokio + rmp-serde reflection |
+| Latency — add(10, 20) | 74.9 µs | |
+| Latency — echo 1KB | 74.1 µs | |
+| Throughput (1 worker) | 14K/s | Sequential (per-call ~71 µs) |
+| Throughput (5 workers) | 55K/s | Shared connection |
+| Throughput (10 workers) | 90K/s | 11 µs/call amortized |
+| Throughput (50 workers) | 130K/s | 7.7 µs/call amortized |
+
+Rust single-call latency is ~2× higher than Go (~70 µs vs ~33 µs) due to rmp-serde's run-time type reflection and Tokio's async overhead. However, at higher concurrency, Rust amortizes the per-call cost and surpasses Go's peak throughput (130K vs 81K calls/sec at 50 workers).
+
+The gap between single-call and concurrent throughput is larger than Go's because Rust's single-threaded Tokio runtime handles I/O multiplexing more efficiently when there's always work queued.
+
+Run: `cargo bench --manifest-path rust/Cargo.toml`
+
+---
+
+## TypeScript Benchmarks (Node.js)
+
+| Metric | Mean | Notes |
+|--------|------|-------|
+| Latency — noop | 89.0 µs | Node.js + @msgpack/msgpack |
+| Latency — add(10, 20) | 65.9 µs | |
+| Latency — echo 1KB | 67.6 µs | |
+| Batch (5 calls) | 109 µs | ~22 µs/call multiplexed |
+| Throughput (1 worker) | 19K/s | Sequential |
+| Throughput (5 workers) | 52K/s | 5 concurrent calls |
+| Throughput (10 workers) | 73K/s | 10 concurrent calls |
+| Throughput (50 workers) | 107K/s | 50 concurrent calls |
+
+TypeScript is 2–3× slower than Go per-call at low concurrency due to the VM overhead of `@msgpack/msgpack` encoding (JavaScript decode/encode through the VM boundary), dynamic type dispatch, and the event loop. At higher concurrency the gap narrows — Node's event loop multiplexes concurrent I/O with near-zero marginal cost, and the 50-worker benchmark reaches 107K calls/sec (comparable to Go's 81K and Rust's 130K at similar concurrency).
+
+Run: `npx tsx ts/bench.ts`
+
+---
+
+## Cross-Language Benchmarks
+
+| Client → Server | Mean latency | Δ vs Go→Go |
+|-----------------|-------------|------------|
+| Go → Go | 32.7 µs | baseline |
+| Go → Python | 187 µs | 5.7× slower |
+| Go → Rust | 43.2 µs | 1.3× slower |
+| Go → TypeScript | 96.1 µs | 2.9× slower |
+| Python → Go | 195 µs | 6.0× slower |
+| Rust → Go | 46.4 µs | 1.4× slower |
+| TypeScript → Go | 101 µs | 3.1× slower |
+
+Cross-language latency is dominated by the *server's* serialization speed, not the network. Python servers are the slowest (CPython + msgpack overhead exceeds 150 µs per call). Rust and Go servers are the fastest.
+
+---
+
+## Summary
+
+| Dimension | Callwire (Go) | gRPC (Go) | Δ |
+|-----------|---------------|-----------|-----|
+| Unary latency (noop) | 32.7 µs | 57.7 µs | **1.76× faster** |
+| Throughput (peak) | 81K/s | 62K/s | **1.30× faster** |
+| Streaming (1000 items) | 982 µs | 2,411 µs | **2.46× faster** |
+| TLS latency (noop) | 38.2 µs | 64.1 µs | **1.68× faster** |
+| Per-connection memory | 4.3 KB | 8.6 KB | **2.0× less** |
+| Per-call allocs | 35 | 52 | **1.5× fewer** |

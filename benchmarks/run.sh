@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Callwire Benchmark Suite ─────────────────────────────────────────────────
-# Runs all 5 phases across Go and Python.
+# Runs all phases across Go, Python, Rust, and TypeScript.
 # Results go to benchmarks/results/<timestamp>/
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +11,8 @@ GO_DIR="$REPO_ROOT/go/callwire"
 PY_DIR="$REPO_ROOT/python"
 PY_BENCH="$PY_DIR/bench.py"
 PY_BIN="$PY_DIR/.venv/bin/python"
+RUST_DIR="$REPO_ROOT/rust"
+TS_DIR="$REPO_ROOT/ts"
 
 RESULTS_DIR="$DIR/results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RESULTS_DIR"
@@ -22,6 +24,7 @@ cleanup() {
     echo "Cleaning up..."
     pkill -f "bench.py" 2>/dev/null || true
     pkill -f "python -c" 2>/dev/null || true
+    pkill -f "target/release/deps/bench" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -129,6 +132,26 @@ PY_CSV="$RESULTS_DIR/python_results.csv"
 
     kill $GO_PID 2>/dev/null || true
 ) | tee "$RESULTS_DIR/python_bench.txt"
+
+echo ""
+
+# ── Rust Benchmarks (Criterion) ──────────────────────────────────────────────
+echo "=== Rust Benchmarks ==="
+(
+    echo "Running Rust benchmarks (criterion)..."
+    cd "$RUST_DIR"
+    cargo bench --bench bench -- 2>&1
+) | tee "$RESULTS_DIR/rust_bench.txt"
+
+echo ""
+
+# ── TypeScript Benchmarks (Node.js) ──────────────────────────────────────────
+echo "=== TypeScript Benchmarks ==="
+(
+    echo "Running TypeScript benchmarks..."
+    cd "$TS_DIR"
+    npx tsx bench.ts 2>&1
+) | tee "$RESULTS_DIR/ts_bench.txt"
 
 echo ""
 echo "============================================"

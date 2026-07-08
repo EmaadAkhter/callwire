@@ -1,8 +1,22 @@
 import * as net from 'net';
+import * as tls from 'tls';
 import { BufferedReader, writeFrame } from './framing';
 import { unpack, packResponse, packError, packStreamChunk, packStreamEnd } from './codec';
 
 export type HandlerFn = (args: unknown[]) => unknown | Promise<unknown> | AsyncIterable<unknown>;
+
+export interface TlsServerOptions {
+  /** PEM-encoded server certificate */
+  cert: string;
+  /** PEM-encoded server private key */
+  key: string;
+  /** PEM-encoded CA certificate for client verification (mTLS) */
+  ca?: string;
+  /** Request client certificate. Default: false */
+  requestCert?: boolean;
+  /** Reject connections without a client certificate when requestCert is true. Default: false */
+  rejectUnauthorized?: boolean;
+}
 
 /**
  * Callwire TypeScript Server.
@@ -21,6 +35,7 @@ export type HandlerFn = (args: unknown[]) => unknown | Promise<unknown> | AsyncI
 export class Server {
   private handlers = new Map<string, HandlerFn>();
   private netServer: net.Server | null = null;
+  private tlsOptions?: TlsServerOptions;
 
   /**
    * Register a function as a callable RPC endpoint.
@@ -34,14 +49,28 @@ export class Server {
   }
 
   /**
-   * Start listening on `host:port`. Returns a Promise that resolves once the
-   * server is bound and ready to accept connections.
+   * Start listening on `host:port`. If `tlsOptions` is provided, the server
+   * will use TLS (and optionally mTLS if `ca` is set).
+   * Returns a Promise that resolves once the server is bound and ready.
    */
-  serve(host: string, port: number): Promise<void> {
+  serve(host: string, port: number, tlsOptions?: TlsServerOptions): Promise<void> {
+    this.tlsOptions = tlsOptions;
     return new Promise((resolve, reject) => {
-      this.netServer = net.createServer((socket) => {
-        this._handleConnection(socket);
-      });
+      if (tlsOptions) {
+        this.netServer = tls.createServer({
+          cert: tlsOptions.cert,
+          key: tlsOptions.key,
+          ca: tlsOptions.ca,
+          requestCert: tlsOptions.requestCert ?? false,
+          rejectUnauthorized: tlsOptions.rejectUnauthorized ?? false,
+        }, (socket) => {
+          this._handleConnection(socket as net.Socket);
+        });
+      } else {
+        this.netServer = net.createServer((socket) => {
+          this._handleConnection(socket);
+        });
+      }
 
       this.netServer.once('error', reject);
       this.netServer.listen(port, host, () => resolve());

@@ -156,7 +156,11 @@ class Client:
                         ssl_context.check_hostname = False
                         ssl_context.verify_mode = ssl.CERT_NONE
                     new_conn = ssl_context.wrap_socket(new_conn, server_hostname=self._host)
-                self.conn = new_conn
+                with self._conn_lock:
+                    if not self._connected:
+                        new_conn.close()
+                        return
+                    self.conn = new_conn
                 return  # success
             except OSError:
                 continue
@@ -165,8 +169,10 @@ class Client:
         try:
             while self._connected:
                 try:
-                    payload = read_frame(self.conn)
-                except OSError:
+                    with self._conn_lock:
+                        conn = self.conn
+                    payload = read_frame(conn)
+                except (OSError, AttributeError, TypeError):
                     if self._reconnect and self._connected:
                         self._drain_pending()
                         self._reconnect_loop()

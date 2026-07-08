@@ -23,6 +23,7 @@ type Client struct {
 
 	mu        sync.Mutex
 	conn      net.Conn
+	closed    bool
 	writeMu   sync.Mutex
 	pending   map[uint64]chan wireMessage
 	pendingMu sync.Mutex
@@ -115,6 +116,8 @@ func ConnectWithReconnect(addr string) (*Client, error) {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	conn := c.conn
+	c.conn = nil
+	c.closed = true
 	c.mu.Unlock()
 	if conn != nil {
 		return conn.Close()
@@ -137,7 +140,12 @@ func (c *Client) readLoop() {
 	for {
 		c.mu.Lock()
 		conn := c.conn
+		closed := c.closed
 		c.mu.Unlock()
+
+		if closed || conn == nil {
+			return
+		}
 
 		payload, err := readFrame(conn)
 		if err != nil {
@@ -175,7 +183,12 @@ func (c *Client) readLoopWithReconnect() {
 	for {
 		c.mu.Lock()
 		conn := c.conn
+		closed := c.closed
 		c.mu.Unlock()
+
+		if closed || conn == nil {
+			return
+		}
 
 		payload, err := readFrame(conn)
 		if err != nil {
@@ -183,6 +196,13 @@ func (c *Client) readLoopWithReconnect() {
 
 			// Attempt reconnect with back-off.
 			for {
+				c.mu.Lock()
+				if c.closed {
+					c.mu.Unlock()
+					return
+				}
+				c.mu.Unlock()
+
 				time.Sleep(backoff)
 				backoff *= 2
 				if backoff > maxBackoff {
@@ -200,6 +220,11 @@ func (c *Client) readLoopWithReconnect() {
 					continue
 				}
 				c.mu.Lock()
+				if c.closed {
+					newConn.Close()
+					c.mu.Unlock()
+					return
+				}
 				c.conn = newConn
 				c.mu.Unlock()
 				backoff = 50 * time.Millisecond // reset on success
@@ -281,7 +306,12 @@ func Import[Resp any](c *Client, ctx context.Context, funcName string, args []in
 
 	c.mu.Lock()
 	conn := c.conn
+	closed := c.closed
 	c.mu.Unlock()
+
+	if closed || conn == nil {
+		return zero, &WireError{ErrorType: "ConnectionClosed", Message: "client closed"}
+	}
 
 	c.writeMu.Lock()
 	err = writeFrame(conn, payload)
@@ -352,7 +382,14 @@ func ImportStream[Resp any](c *Client, ctx context.Context, funcName string, arg
 
 	c.mu.Lock()
 	conn := c.conn
+	closed := c.closed
 	c.mu.Unlock()
+
+	if closed || conn == nil {
+		close(results)
+		errc <- &WireError{ErrorType: "ConnectionClosed", Message: "client closed"}
+		return results, errc
+	}
 
 	c.writeMu.Lock()
 	err = writeFrame(conn, payload)

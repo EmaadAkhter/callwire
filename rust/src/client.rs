@@ -41,6 +41,7 @@ enum ActorCommand {
         payload: Vec<u8>,
         tx: mpsc::Sender<Result<WireMessage>>,
     },
+    Shutdown,
 }
 
 #[derive(Clone)]
@@ -126,6 +127,25 @@ impl Client {
                 reconnect,
             })
         })
+    }
+
+    /// Close the connection and shut down the background actor task.
+    /// Once called, the client will no longer process requests.
+    pub fn close(&self) {
+        match &*self.inner {
+            ClientInner::Direct { tx, .. } => {
+                let _ = tx.try_send(ActorCommand::Shutdown);
+            }
+            ClientInner::Routing { registry_client, worker_clients, .. } => {
+                registry_client.close();
+                let workers = worker_clients.try_lock();
+                if let Ok(mut workers) = workers {
+                    for (_, client) in workers.drain() {
+                        client.close();
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_worker<'a>(&'a self, func_name: &'a str) -> futures_util::future::BoxFuture<'a, Result<Option<Self>>> {
@@ -385,6 +405,7 @@ async fn run_actor(
                     break;
                 };
                 match cmd {
+                    ActorCommand::Shutdown => break,
                     ActorCommand::Call { id, payload, tx } => {
                         let sender = PendingSender::Unary(Arc::new(MutexOneshotSender::new(tx)));
                         pending.insert(id, sender);
@@ -550,6 +571,7 @@ async fn run_tls_actor(
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { break; };
                 match cmd {
+                    ActorCommand::Shutdown => break,
                     ActorCommand::Call { id, payload, tx } => {
                         let sender = PendingSender::Unary(Arc::new(MutexOneshotSender::new(tx)));
                         pending.insert(id, sender);
