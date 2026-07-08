@@ -24,7 +24,7 @@ typedef enum {
     CALLWIRE_MAP,
 } callwire_value_type_t;
 
-typedef struct {
+typedef struct callwire_value {
     callwire_value_type_t type;
     union {
         int is_true;                   /* CALLWIRE_BOOL */
