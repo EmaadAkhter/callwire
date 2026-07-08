@@ -352,10 +352,10 @@ fn load_private_key(pem: &[u8]) -> io::Result<PrivateKeyDer<'static>> {
 #[cfg(test)]
 pub fn gen_self_signed(san: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     use rcgen::{generate_simple_self_signed, CertifiedKey};
-    let CertifiedKey { cert, key_pair } =
+    let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec![san.to_owned()]).unwrap();
     let cert_pem = cert.pem().into_bytes();
-    let key_pem = key_pair.serialize_pem().into_bytes();
+    let key_pem = signing_key.serialize_pem().into_bytes();
     let ca_pem = cert_pem.clone();
     (cert_pem, key_pem, ca_pem)
 }
