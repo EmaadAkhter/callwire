@@ -306,6 +306,20 @@ async fn dispatch_tls(writer: Arc<tokio::sync::Mutex<TlsWriteHalf>>, msg: crate:
                 }
             }
         }
+        RegistryEntry::ClientStream(_) | RegistryEntry::Bidi(_) => {
+            // TLS server dispatch does not yet route streaming-input frames
+            // (stream_chunk/stream_close/stream_end) to an in-progress call —
+            // that routing only exists in the plaintext handle_connection in server.rs.
+            // Client-streaming/bidi over TLS is not yet supported.
+            if let Ok(payload) = crate::codec::pack_error(
+                msg.id,
+                "UnsupportedError",
+                "client-streaming and bidi-streaming are not yet supported over TLS",
+            ) {
+                let mut w = writer.lock().await;
+                let _ = crate::framing::write_frame(&mut *w, &payload).await;
+            }
+        }
     }
 }
 
