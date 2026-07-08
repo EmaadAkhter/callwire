@@ -33,6 +33,26 @@ int main() {
         return callwire::Value(static_cast<int64_t>(++callCount));
     });
 
+    // Server-streaming
+    server.exportStream("count_to", [](const std::vector<callwire::Value> &args, callwire::EmitFn emit) {
+        int64_t n = args[0].asInt64();
+        for (int64_t i = 1; i <= n; i++) emit(callwire::Value(i));
+    });
+
+    // Client-streaming
+    server.exportClientStream("sum_stream", [](callwire::RecvFn recv) -> callwire::Value {
+        int64_t sum = 0;
+        callwire::Value chunk;
+        while (recv(chunk)) sum += chunk.asInt64();
+        return callwire::Value(sum);
+    });
+
+    // Bidi
+    server.exportBidi("echo_double", [](callwire::RecvFn recv, callwire::EmitFn emit) {
+        callwire::Value chunk;
+        while (recv(chunk)) emit(callwire::Value(chunk.asInt64() * 2));
+    });
+
     std::thread serverThread([&server]() { server.serve(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -72,6 +92,45 @@ int main() {
             assert(false && "expected CallwireException");
         } catch (const callwire::CallwireException &e) {
             std::cout << "test_not_found: OK (" << e.what() << ")\n";
+        }
+
+        // Server-streaming round trip
+        {
+            auto stream = client.streamBegin("count_to", {callwire::Value(5)});
+            int64_t expected = 1;
+            callwire::Value chunk;
+            while (stream.recv(chunk)) {
+                assert(chunk.asInt64() == expected);
+                expected++;
+            }
+            assert(expected == 6);
+            std::cout << "test_server_streaming: OK (1..5)\n";
+        }
+
+        // Client-streaming round trip
+        {
+            auto stream = client.exportStream("sum_stream");
+            for (int64_t i = 1; i <= 4; i++) stream.send(callwire::Value(i));
+            auto result = stream.closeAndRecv();
+            assert(result.asInt64() == 10);
+            std::cout << "test_client_streaming: OK (1+2+3+4 = 10)\n";
+        }
+
+        // Bidi round trip
+        {
+            auto stream = client.bidiStream("echo_double");
+            stream.send(callwire::Value(3));
+            callwire::Value r1;
+            assert(stream.recv(r1));
+            assert(r1.asInt64() == 6);
+
+            stream.send(callwire::Value(5));
+            callwire::Value r2;
+            assert(stream.recv(r2));
+            assert(r2.asInt64() == 10);
+
+            stream.closeSend();
+            std::cout << "test_bidi_streaming: OK (3->6, 5->10)\n";
         }
     }
 

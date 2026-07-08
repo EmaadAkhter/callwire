@@ -472,6 +472,17 @@ Handler makeTypedHandler(F lambda) {
     return makeTypedHandlerImpl(std::move(lambda), std::make_index_sequence<function_traits<F>::arity>{});
 }
 
+// Streaming handler signatures:
+// - StreamHandler (server-streaming): given args, call emit(value) per chunk.
+// - ClientStreamHandler (client-streaming): given recv(), pull chunks until it
+//   returns false, return the single result.
+// - BidiHandler (bidi): given recv()/emit(), consume/produce in any order.
+using EmitFn = std::function<void(Value)>;
+using RecvFn = std::function<bool(Value &)>; // true + out param filled, false = client done
+using StreamHandler = std::function<void(const std::vector<Value> &, EmitFn)>;
+using ClientStreamHandler = std::function<Value(RecvFn)>;
+using BidiHandler = std::function<void(RecvFn, EmitFn)>;
+
 class Server {
 public:
     Server(const std::string &addr, int port) {
@@ -482,9 +493,13 @@ public:
     }
 
     ~Server() {
-        // Registered handlers are heap-allocated (see exportFunc) and owned
-        // by this Server; free them before the object goes away.
+        // Registered handlers are heap-allocated (see exportFunc/exportStream/
+        // exportClientStream/exportBidi) and owned by this Server; free them
+        // before the object goes away.
         for (auto *h : ownedHandlers_) delete h;
+        for (auto *h : ownedStreamHandlers_) delete h;
+        for (auto *h : ownedClientStreamHandlers_) delete h;
+        for (auto *h : ownedBidiHandlers_) delete h;
         if (server_) callwire_server_close(server_);
     }
 
@@ -517,6 +532,41 @@ public:
               typename std::enable_if<!std::is_invocable_r<Value, F, const std::vector<Value> &>::value, int>::type = 0>
     void exportFunc(const std::string &name, F lambda) {
         exportFunc(name, makeTypedHandler(std::move(lambda)));
+    }
+
+    // Server-streaming: [](const vector<Value>& args, EmitFn emit) { emit(Value(1)); emit(Value(2)); }
+    void exportStream(const std::string &name, StreamHandler handler) {
+        auto *heapHandler = new StreamHandler(std::move(handler));
+        ownedStreamHandlers_.push_back(heapHandler);
+
+        int rc = callwire_server_export_stream_ctx(server_, name.c_str(), heapHandler, &Server::streamTrampoline);
+        if (rc != 0) {
+            throw CallwireException(std::string("exportStream failed: ") + callwire_error());
+        }
+    }
+
+    // Client-streaming: [](RecvFn recv) -> Value { Value v; int64_t sum=0;
+    //   while (recv(v)) sum += v.asInt64(); return Value(sum); }
+    void exportClientStream(const std::string &name, ClientStreamHandler handler) {
+        auto *heapHandler = new ClientStreamHandler(std::move(handler));
+        ownedClientStreamHandlers_.push_back(heapHandler);
+
+        int rc = callwire_server_export_client_stream_ctx(server_, name.c_str(), heapHandler,
+                                                            &Server::clientStreamTrampoline);
+        if (rc != 0) {
+            throw CallwireException(std::string("exportClientStream failed: ") + callwire_error());
+        }
+    }
+
+    // Bidi: [](RecvFn recv, EmitFn emit) { Value v; while (recv(v)) emit(Value(v.asInt64()*2)); }
+    void exportBidi(const std::string &name, BidiHandler handler) {
+        auto *heapHandler = new BidiHandler(std::move(handler));
+        ownedBidiHandlers_.push_back(heapHandler);
+
+        int rc = callwire_server_export_bidi_ctx(server_, name.c_str(), heapHandler, &Server::bidiTrampoline);
+        if (rc != 0) {
+            throw CallwireException(std::string("exportBidi failed: ") + callwire_error());
+        }
     }
 
     void serve() {
@@ -559,8 +609,85 @@ private:
         }
     }
 
+    static int streamTrampoline(void *userdata, callwire_value_t *args, size_t args_count,
+                                 callwire_stream_emit_fn emit, void *emit_ctx) {
+        auto *handler = static_cast<StreamHandler *>(userdata);
+        std::vector<Value> cpp_args;
+        cpp_args.reserve(args_count);
+        for (size_t i = 0; i < args_count; i++) {
+            cpp_args.push_back(Value::deepCopy(args[i]));
+        }
+
+        EmitFn emitFn = [emit, emit_ctx](Value v) {
+            callwire_value_t raw = v.release_raw();
+            emit(emit_ctx, &raw);
+            callwire_value_free(&raw);
+        };
+
+        try {
+            (*handler)(cpp_args, emitFn);
+            return 0;
+        } catch (const std::exception &) {
+            return -1;
+        }
+    }
+
+    static int clientStreamTrampoline(void *userdata, callwire_stream_recv_fn recv, void *recv_ctx,
+                                       callwire_value_t *result_out) {
+        auto *handler = static_cast<ClientStreamHandler *>(userdata);
+
+        RecvFn recvFn = [recv, recv_ctx](Value &out) -> bool {
+            callwire_value_t raw{};
+            int rc = recv(recv_ctx, &raw);
+            if (rc == 0) {
+                out = Value::adopt(raw);
+                return true;
+            }
+            return false; // rc == 1 (clean end) or rc == -1 (error) both stop the loop
+        };
+
+        try {
+            Value result = (*handler)(recvFn);
+            *result_out = result.release_raw();
+            return 0;
+        } catch (const std::exception &) {
+            result_out->type = CALLWIRE_NULL;
+            return -1;
+        }
+    }
+
+    static int bidiTrampoline(void *userdata, callwire_stream_recv_fn recv, void *recv_ctx,
+                               callwire_stream_emit_fn emit, void *emit_ctx) {
+        auto *handler = static_cast<BidiHandler *>(userdata);
+
+        RecvFn recvFn = [recv, recv_ctx](Value &out) -> bool {
+            callwire_value_t raw{};
+            int rc = recv(recv_ctx, &raw);
+            if (rc == 0) {
+                out = Value::adopt(raw);
+                return true;
+            }
+            return false;
+        };
+        EmitFn emitFn = [emit, emit_ctx](Value v) {
+            callwire_value_t raw = v.release_raw();
+            emit(emit_ctx, &raw);
+            callwire_value_free(&raw);
+        };
+
+        try {
+            (*handler)(recvFn, emitFn);
+            return 0;
+        } catch (const std::exception &) {
+            return -1;
+        }
+    }
+
     callwire_server_t *server_ = nullptr;
     std::vector<Handler *> ownedHandlers_;
+    std::vector<StreamHandler *> ownedStreamHandlers_;
+    std::vector<ClientStreamHandler *> ownedClientStreamHandlers_;
+    std::vector<BidiHandler *> ownedBidiHandlers_;
 };
 
 }  // namespace callwire
