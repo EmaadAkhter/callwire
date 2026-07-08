@@ -88,7 +88,20 @@ type PendingStream = {
   error: (err: Error) => void;
 };
 
-type Pending = PendingUnary | PendingStream;
+type PendingClientStream = {
+  kind: 'clientstream';
+  resolve: (msg: WireMessage) => void;
+  reject: (err: Error) => void;
+};
+
+type PendingBidi = {
+  kind: 'bidi';
+  push: (chunk: unknown) => void;
+  end: () => void;
+  error: (err: Error) => void;
+};
+
+type Pending = PendingUnary | PendingStream | PendingClientStream | PendingBidi;
 
 export interface TlsClientOptions {
   /** PEM-encoded CA certificate for server verification (optional; skip to trust self-signed) */
@@ -245,6 +258,20 @@ export class Client extends EventEmitter {
         this.pending.delete(msg.id);
         entry.error(new CallwireError(msg.error_type ?? 'Error', msg.message ?? 'unknown'));
       }
+    } else if (entry.kind === 'clientstream') {
+      if (msg.type === 'response' || msg.type === 'error') {
+        this.pending.delete(msg.id);
+        entry.resolve(msg);
+      }
+    } else if (entry.kind === 'bidi') {
+      if (msg.type === 'stream_chunk') {
+        entry.push(msg.result);
+      } else if (msg.type === 'stream_end') {
+        entry.end();
+      } else if (msg.type === 'error') {
+        this.pending.delete(msg.id);
+        entry.error(new CallwireError(msg.error_type ?? 'Error', msg.message ?? 'unknown'));
+      }
     }
   }
 
@@ -253,7 +280,7 @@ export class Client extends EventEmitter {
     const err = new Error('Connection closed');
 
     for (const entry of this.pending.values()) {
-      if (entry.kind === 'unary') entry.reject(err);
+      if (entry.kind === 'unary' || entry.kind === 'clientstream') entry.reject(err);
       else entry.error(err);
     }
     this.pending.clear();
@@ -439,6 +466,73 @@ export class Client extends EventEmitter {
   }
 
   /**
+   * Begin client-streaming: send multiple chunks, receive single response.
+   * @returns ExportStream with send() and closeAndRecv() methods
+   */
+  async exportStream<Req = unknown, Resp = unknown>(func: string): Promise<ExportStream<Req, Resp>> {
+    const worker = await this._resolveWorker(func);
+    if (worker) return worker.exportStream<Req, Resp>(func);
+
+    if (!this.connected || !this.socket) {
+      throw new Error('Not connected');
+    }
+
+    const id = this._nextId();
+    const payload = packRequest(id, func, []);
+
+    return new Promise<ExportStream<Req, Resp>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`exportStream '${func}' timed out`));
+      }, this.timeout);
+
+      this.pending.set(id, {
+        kind: 'clientstream',
+        resolve: (msg: WireMessage) => {
+          clearTimeout(timer);
+          // Keep the pending entry until closeAndRecv resolves it
+        },
+        reject: (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+
+      const stream = new ExportStream<Req, Resp>(this, id, timer, func);
+      writeFrame(this.socket!, payload);
+      resolve(stream);
+    });
+  }
+
+  /**
+   * Begin bidirectional-streaming: send and receive chunks concurrently.
+   * @returns BidiStream with send(), recv(), and closeSend() methods
+   */
+  async importBidi<Req = unknown, Resp = unknown>(func: string): Promise<BidiStream<Req, Resp>> {
+    const worker = await this._resolveWorker(func);
+    if (worker) return worker.importBidi<Req, Resp>(func);
+
+    if (!this.connected || !this.socket) {
+      throw new Error('Not connected');
+    }
+
+    const id = this._nextId();
+    const { packBidiRequest } = await import('./codec');
+    const payload = packBidiRequest(id, func, []);
+
+    const stream = new BidiStream<Req, Resp>(this, id, func);
+    this.pending.set(id, {
+      kind: 'bidi',
+      push: (value) => stream._push(value),
+      end: () => stream._end(),
+      error: (err) => stream._error(err),
+    });
+
+    writeFrame(this.socket!, payload);
+    return stream;
+  }
+
+  /**
    * Close the connection and release all resources.
    */
   close(): void {
@@ -448,7 +542,7 @@ export class Client extends EventEmitter {
 
     const err = new Error('Connection closed');
     for (const entry of this.pending.values()) {
-      if (entry.kind === 'unary') entry.reject(err);
+      if (entry.kind === 'unary' || entry.kind === 'clientstream') entry.reject(err);
       else entry.error(err);
     }
     this.pending.clear();
@@ -458,5 +552,122 @@ export class Client extends EventEmitter {
     }
     this.workerClients.clear();
     this.routeCache.clear();
+  }
+}
+
+export class ExportStream<Req = unknown, Resp = unknown> {
+  constructor(
+    private client: Client,
+    private id: number,
+    private timer: NodeJS.Timeout,
+    private func: string,
+  ) {}
+
+  send(item: Req): void {
+    if (!this.client['socket']) {
+      throw new Error('Not connected');
+    }
+    const { packStreamChunk } = require('./codec');
+    const payload = packStreamChunk(this.id, item);
+    writeFrame(this.client['socket'], payload);
+  }
+
+  async closeAndRecv(): Promise<Resp> {
+    if (!this.client['socket']) {
+      throw new Error('Not connected');
+    }
+    const { packStreamClose } = require('./codec');
+    const payload = packStreamClose(this.id);
+    writeFrame(this.client['socket'], payload);
+
+    return new Promise<Resp>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.client['pending'].delete(this.id);
+        reject(new Error(`closeAndRecv '${this.func}' timed out`));
+      }, this.client['timeout']);
+
+      const oldPending = this.client['pending'].get(this.id);
+      this.client['pending'].set(this.id, {
+        kind: 'clientstream',
+        resolve: (msg: WireMessage) => {
+          clearTimeout(timer);
+          if (msg.type === 'error') {
+            reject(new CallwireError(msg.error_type ?? 'Error', msg.message ?? ''));
+          } else {
+            resolve(msg.result as Resp);
+          }
+        },
+        reject: (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+    });
+  }
+}
+
+export class BidiStream<Req = unknown, Resp = unknown> {
+  private queue: Array<{ type: 'chunk'; value: unknown } | { type: 'error'; err: Error } | { type: 'end' }> = [];
+  private waiting: (() => void) | null = null;
+
+  constructor(
+    private client: Client,
+    private id: number,
+    private func: string,
+  ) {}
+
+  _push(value: unknown): void {
+    this.queue.push({ type: 'chunk', value });
+    this.waiting?.();
+    this.waiting = null;
+  }
+
+  _end(): void {
+    this.queue.push({ type: 'end' });
+    this.waiting?.();
+    this.waiting = null;
+  }
+
+  _error(err: Error): void {
+    this.queue.push({ type: 'error', err });
+    this.waiting?.();
+    this.waiting = null;
+  }
+
+  send(item: Req): void {
+    if (!this.client['socket']) {
+      throw new Error('Not connected');
+    }
+    const { packStreamChunk } = require('./codec');
+    const payload = packStreamChunk(this.id, item);
+    writeFrame(this.client['socket'], payload);
+  }
+
+  async closeSend(): Promise<void> {
+    if (!this.client['socket']) {
+      throw new Error('Not connected');
+    }
+    const { packStreamEnd } = require('./codec');
+    const payload = packStreamEnd(this.id);
+    writeFrame(this.client['socket'], payload);
+  }
+
+  async *recv(): AsyncGenerator<Resp> {
+    while (true) {
+      while (this.queue.length === 0) {
+        await new Promise<void>(resolve => { this.waiting = resolve; });
+      }
+
+      const item = this.queue.shift()!;
+      if (item.type === 'chunk') {
+        yield item.value as Resp;
+      } else if (item.type === 'error') {
+        this.client['pending'].delete(this.id);
+        throw item.err;
+      } else {
+        this.client['pending'].delete(this.id);
+        return;
+      }
+    }
   }
 }
