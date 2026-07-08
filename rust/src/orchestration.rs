@@ -100,7 +100,22 @@ impl OrchestratorGuard {
 
     fn terminate_children(&mut self) {
         for child in &mut self.children {
-            let _ = child.kill();
+            // Negative PID = signal the whole process group (process_group(0)
+            // at spawn time made each child's PID double as its group ID).
+            // Falls back to killing just the direct child if the group
+            // signal fails for any reason.
+            #[cfg(unix)]
+            {
+                let pid = child.id() as i32;
+                let rc = unsafe { libc::kill(-pid, libc::SIGTERM) };
+                if rc != 0 {
+                    let _ = child.kill();
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
         }
         for child in &mut self.children {
             let _ = child.wait();
@@ -243,12 +258,28 @@ async fn init_as_orchestrator() -> anyhow::Result<OrchestratorGuard> {
             continue;
         };
 
-        let child = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(cmd)
             .env("CALLWIRE_SPAWNED", "1")
-            .env("CALLWIRE_REGISTRY", &registry_addr)
-            .spawn();
+            .env("CALLWIRE_REGISTRY", &registry_addr);
+
+        // Put the shell AND everything it execs (e.g. "cd x && ./worker")
+        // into its own process group. Without this, terminate_children()'s
+        // child.kill() only reaches the "sh -c" wrapper — the actual
+        // worker binary underneath is a separate process that never
+        // receives the signal, keeps running, and (having inherited
+        // stdout/stderr) keeps those pipes open, hanging anything reading
+        // this process's output after it exits. Same root cause as the
+        // Python/Go orchestrators' shell=True bug, fixed the same way.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+
+        let child = command.spawn();
 
         match child {
             Ok(c) => {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -154,7 +155,13 @@ func (h *OrchestratorHandle) Shutdown() {
 		h.mu.Unlock()
 		for _, p := range procs {
 			if p.Process != nil {
-				_ = p.Process.Signal(os.Interrupt)
+				// Negative PID = signal the whole process group (the "sh -c"
+				// wrapper and whatever it exec'd — see the Setpgid comment
+				// where these are spawned). Falls back to signalling just
+				// the shell if the group lookup/signal fails for any reason.
+				if err := syscall.Kill(-p.Process.Pid, syscall.SIGTERM); err != nil {
+					_ = p.Process.Signal(os.Interrupt)
+				}
 			}
 		}
 		for _, p := range procs {
@@ -311,6 +318,15 @@ func initAsOrchestrator(ctx context.Context) (*OrchestratorHandle, error) {
 		)
 		proc.Stdout = os.Stdout
 		proc.Stderr = os.Stderr
+		// Put the shell AND everything it execs (e.g. "cd x && ./worker")
+		// into its own process group. Without this, Shutdown()'s
+		// p.Process.Signal() only reaches the "sh -c" wrapper — the actual
+		// worker binary underneath is a separate process that never gets
+		// the signal, keeps running, and (having inherited stdout/stderr)
+		// keeps those pipes open, hanging anything reading this process's
+		// output after it exits. Same root cause as the Python
+		// orchestrator's shell=True bug, fixed the same way.
+		proc.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		if err := proc.Start(); err != nil {
 			log.Printf("[callwire] Failed to spawn '%s': %v", svc.Name, err)

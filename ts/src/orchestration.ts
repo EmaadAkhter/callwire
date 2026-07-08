@@ -72,7 +72,12 @@ function killStalePids() {
   try {
     const pids = fs.readFileSync(pidFile, 'utf-8').split('\n').filter(Boolean);
     for (const pid of pids) {
-      try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already gone */ }
+      // Negative PID targets the process group (see the detached: true
+      // comment at spawn time) so a stale hot-reload PID takes its whole
+      // worker tree down, not just the shell wrapper.
+      try { process.kill(-Number(pid), 'SIGTERM'); } catch {
+        try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already gone */ }
+      }
     }
     fs.unlinkSync(pidFile);
   } catch { /* ignore */ }
@@ -98,7 +103,18 @@ export class OrchestratorHandle {
   /** Terminate all spawned workers and close the registry. */
   async shutdown(): Promise<void> {
     for (const proc of this.procs) {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      // Negative PID = signal the whole process group (detached: true at
+      // spawn time made each child's PID double as its group ID). Falls
+      // back to signalling just the direct child if the group signal fails.
+      try {
+        if (proc.pid) {
+          process.kill(-proc.pid, 'SIGTERM');
+        } else {
+          proc.kill('SIGTERM');
+        }
+      } catch {
+        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      }
     }
     await this.registryServer.close();
     try { fs.unlinkSync(path.join('.callwire', 'pids')); } catch { /* ignore */ }
@@ -248,6 +264,16 @@ async function initAsOrchestrator(): Promise<OrchestratorHandle> {
     const proc = child_process.spawn('sh', ['-c', cmd], {
       env: { ...process.env, CALLWIRE_SPAWNED: '1', CALLWIRE_REGISTRY: registryAddr },
       stdio: 'inherit',
+      // Puts the shell AND everything it execs (e.g. "cd x && ./worker")
+      // into its own process group (Unix). Without this, shutdown()'s
+      // proc.kill() only reaches the "sh -c" wrapper — the actual worker
+      // binary underneath is a separate process that never receives the
+      // signal, keeps running, and (having inherited stdout/stderr via
+      // stdio: 'inherit') keeps those pipes open, hanging anything reading
+      // this process's output after it exits. Same root cause as the
+      // Python/Go/Rust orchestrators' shell wrapper bug, fixed the same way
+      // — shutdown() below signals -proc.pid (the group) instead of proc.pid.
+      detached: true,
     });
 
     proc.on('error', (e) => console.error(`[callwire] Failed to spawn '${name}': ${e.message}`));
