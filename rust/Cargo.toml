@@ -47,7 +47,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
-rcgen = "0.13"
+rcgen = "0.14"
 criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
