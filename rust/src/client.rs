@@ -41,6 +41,18 @@ enum ActorCommand {
         payload: Vec<u8>,
         tx: mpsc::Sender<Result<WireMessage>>,
     },
+    ExportStream {
+        id: u64,
+        initial_payload: Vec<u8>,
+        chunk_rx: mpsc::Receiver<Vec<u8>>,
+        resp_tx: oneshot::Sender<Result<WireMessage>>,
+    },
+    ImportBidi {
+        id: u64,
+        initial_payload: Vec<u8>,
+        outbound_rx: mpsc::Receiver<Vec<u8>>,
+        inbound_tx: mpsc::Sender<Result<WireMessage>>,
+    },
     Shutdown,
 }
 
@@ -64,6 +76,89 @@ impl MutexOneshotSender {
                 let _ = tx.send(val);
             }
         }
+    }
+}
+
+pub struct ExportStream<Req, Resp> {
+    id: u64,
+    chunk_tx: mpsc::Sender<Vec<u8>>,
+    resp_rx: Option<oneshot::Receiver<Result<WireMessage>>>,
+    _req: std::marker::PhantomData<Req>,
+    _resp: std::marker::PhantomData<Resp>,
+}
+
+impl<Req: Serialize, Resp: DeserializeOwned> ExportStream<Req, Resp> {
+    pub async fn send(&mut self, item: Req) -> Result<()> {
+        let payload = crate::codec::pack_stream_chunk(self.id, &item)?;
+        self.chunk_tx.send(payload).await.map_err(|_| Error::ConnectionClosed)
+    }
+
+    pub async fn close_and_recv(mut self) -> Result<Resp> {
+        let payload = crate::codec::pack_stream_close(self.id)?;
+        self.chunk_tx.send(payload).await.map_err(|_| Error::ConnectionClosed)?;
+        drop(self.chunk_tx);
+
+        let rx = self.resp_rx.take().ok_or(Error::ConnectionClosed)?;
+        let msg = rx.await.map_err(|_| Error::ConnectionClosed)??;
+
+        if msg.msg_type == "error" {
+            let err_type = msg.error_type.unwrap_or_else(|| "Error".to_string());
+            let err_msg = msg.message.unwrap_or_else(|| "unknown error".to_string());
+            return Err(Error::Remote(CallwireError {
+                error_type: err_type,
+                message: err_msg,
+            }));
+        }
+
+        let val = msg.result.unwrap_or(rmpv::Value::Nil);
+        rmpv::ext::from_value(val)
+            .map_err(|e| Error::TypeError(format!("failed to decode response: {e}")))
+    }
+}
+
+pub struct BidiStream<Req, Resp> {
+    id: u64,
+    outbound_tx: mpsc::Sender<Vec<u8>>,
+    inbound_rx: mpsc::Receiver<Result<WireMessage>>,
+    _req: std::marker::PhantomData<Req>,
+    _resp: std::marker::PhantomData<Resp>,
+}
+
+impl<Req: Serialize, Resp: DeserializeOwned> BidiStream<Req, Resp> {
+    pub async fn send(&mut self, item: Req) -> Result<()> {
+        let payload = crate::codec::pack_stream_chunk(self.id, &item)?;
+        self.outbound_tx.send(payload).await.map_err(|_| Error::ConnectionClosed)
+    }
+
+    pub async fn recv(&mut self) -> Result<Option<Resp>> {
+        match self.inbound_rx.recv().await {
+            Some(Ok(msg)) => {
+                if msg.msg_type == "stream_end" {
+                    Ok(None)
+                } else if msg.msg_type == "error" {
+                    let err_type = msg.error_type.unwrap_or_else(|| "Error".to_string());
+                    let err_msg = msg.message.unwrap_or_else(|| "unknown error".to_string());
+                    Err(Error::Remote(CallwireError {
+                        error_type: err_type,
+                        message: err_msg,
+                    }))
+                } else if msg.msg_type == "stream_chunk" {
+                    let val = msg.result.unwrap_or(rmpv::Value::Nil);
+                    let item: Resp = rmpv::ext::from_value(val)
+                        .map_err(|e| Error::TypeError(format!("failed to decode stream chunk: {e}")))?;
+                    Ok(Some(item))
+                } else {
+                    Ok(None)
+                }
+            }
+            Some(Err(e)) => Err(e),
+            None => Err(Error::ConnectionClosed),
+        }
+    }
+
+    pub async fn close_send(&mut self) -> Result<()> {
+        let payload = crate::codec::pack_stream_end(self.id)?;
+        self.outbound_tx.send(payload).await.map_err(|_| Error::ConnectionClosed)
     }
 }
 
@@ -285,6 +380,74 @@ impl Client {
         }
         Ok(out)
     }
+
+    pub async fn export_stream<Req, Resp>(&self, func_name: &str) -> Result<ExportStream<Req, Resp>>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        let (tx, next_id) = match &*self.inner {
+            ClientInner::Direct { tx, next_id } => (tx, next_id),
+            _ => unreachable!(),
+        };
+
+        let id = next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let initial_payload = pack_request(id, func_name, &())?;
+
+        let (chunk_tx, chunk_rx) = mpsc::channel(256);
+        let (resp_tx, resp_rx) = oneshot::channel();
+
+        tx.send(ActorCommand::ExportStream {
+            id,
+            initial_payload,
+            chunk_rx,
+            resp_tx,
+        })
+        .await
+        .map_err(|_| Error::ConnectionClosed)?;
+
+        Ok(ExportStream {
+            id,
+            chunk_tx,
+            resp_rx: Some(resp_rx),
+            _req: std::marker::PhantomData,
+            _resp: std::marker::PhantomData,
+        })
+    }
+
+    pub async fn import_bidi<Req, Resp>(&self, func_name: &str) -> Result<BidiStream<Req, Resp>>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        let (tx, next_id) = match &*self.inner {
+            ClientInner::Direct { tx, next_id } => (tx, next_id),
+            _ => unreachable!(),
+        };
+
+        let id = next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let initial_payload = crate::codec::pack_bidi_request(id, func_name, &())?;
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(256);
+        let (inbound_tx, inbound_rx) = mpsc::channel(256);
+
+        tx.send(ActorCommand::ImportBidi {
+            id,
+            initial_payload,
+            outbound_rx,
+            inbound_tx,
+        })
+        .await
+        .map_err(|_| Error::ConnectionClosed)?;
+
+        Ok(BidiStream {
+            id,
+            outbound_tx,
+            inbound_rx,
+            _req: std::marker::PhantomData,
+            _resp: std::marker::PhantomData,
+        })
+    }
 }
 
 pub struct CallwireStream<Resp> {
@@ -391,14 +554,49 @@ async fn run_actor(
     mut rx: mpsc::Receiver<ActorCommand>,
 ) {
     let mut pending: HashMap<u64, PendingSender> = HashMap::new();
-    
+    let mut export_streams: HashMap<u64, mpsc::Receiver<Vec<u8>>> = HashMap::new();
+    let mut bidi_streams: HashMap<u64, mpsc::Receiver<Vec<u8>>> = HashMap::new();
+
     let (stream_reader, stream_writer) = stream.into_split();
     let (reader_tx, mut reader_rx) = mpsc::channel(1024);
     spawn_reader(stream_reader, reader_tx.clone());
-    
+
     let mut writer = Some(stream_writer);
-    
+
     loop {
+        // Pump chunks from export/bidi streams before waiting
+        {
+            let mut ids_to_remove = Vec::new();
+            for (id, rx) in &mut export_streams {
+                while let Ok(payload) = rx.try_recv() {
+                    if let Some(w) = &mut writer {
+                        let _ = crate::framing::write_frame(w, &payload).await;
+                    }
+                }
+                if rx.is_closed() {
+                    ids_to_remove.push(*id);
+                }
+            }
+            for id in ids_to_remove {
+                export_streams.remove(&id);
+            }
+
+            let mut ids_to_remove = Vec::new();
+            for (id, rx) in &mut bidi_streams {
+                while let Ok(payload) = rx.try_recv() {
+                    if let Some(w) = &mut writer {
+                        let _ = crate::framing::write_frame(w, &payload).await;
+                    }
+                }
+                if rx.is_closed() {
+                    ids_to_remove.push(*id);
+                }
+            }
+            for id in ids_to_remove {
+                bidi_streams.remove(&id);
+            }
+        }
+
         tokio::select! {
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else {
@@ -438,7 +636,7 @@ async fn run_actor(
                         } else {
                             false
                         };
-                        
+
                         if !write_ok {
                             drop(writer.take());
                             drain_pending(&mut pending);
@@ -452,6 +650,60 @@ async fn run_actor(
                             } else {
                                 break;
                             }
+                        }
+                    }
+                    ActorCommand::ExportStream { id, initial_payload, chunk_rx, resp_tx } => {
+                        let write_ok = if let Some(w) = &mut writer {
+                            crate::framing::write_frame(w, &initial_payload).await.is_ok()
+                        } else {
+                            false
+                        };
+
+                        if !write_ok {
+                            drop(writer.take());
+                            drain_pending(&mut pending);
+                            let _ = resp_tx.send(Err(Error::ConnectionClosed));
+                            if !reconnect {
+                                break;
+                            }
+                            if let Ok(new_stream) = reconnect_loop(&addr).await {
+                                let (new_r, new_w) = new_stream.into_split();
+                                writer = Some(new_w);
+                                spawn_reader(new_r, reader_tx.clone());
+                            } else {
+                                break;
+                            }
+                        } else {
+                            let sender = PendingSender::Unary(Arc::new(MutexOneshotSender::new(resp_tx)));
+                            pending.insert(id, sender);
+                            export_streams.insert(id, chunk_rx);
+                        }
+                    }
+                    ActorCommand::ImportBidi { id, initial_payload, outbound_rx, inbound_tx } => {
+                        let sender = PendingSender::Stream(inbound_tx);
+                        pending.insert(id, sender);
+
+                        let write_ok = if let Some(w) = &mut writer {
+                            crate::framing::write_frame(w, &initial_payload).await.is_ok()
+                        } else {
+                            false
+                        };
+
+                        if !write_ok {
+                            drop(writer.take());
+                            drain_pending(&mut pending);
+                            if !reconnect {
+                                break;
+                            }
+                            if let Ok(new_stream) = reconnect_loop(&addr).await {
+                                let (new_r, new_w) = new_stream.into_split();
+                                writer = Some(new_w);
+                                spawn_reader(new_r, reader_tx.clone());
+                            } else {
+                                break;
+                            }
+                        } else {
+                            bidi_streams.insert(id, outbound_rx);
                         }
                     }
                 }
@@ -559,6 +811,8 @@ async fn run_tls_actor(
     mut rx: mpsc::Receiver<ActorCommand>,
 ) {
     let mut pending: HashMap<u64, PendingSender> = HashMap::new();
+    let mut export_streams: HashMap<u64, mpsc::Receiver<Vec<u8>>> = HashMap::new();
+    let mut bidi_streams: HashMap<u64, mpsc::Receiver<Vec<u8>>> = HashMap::new();
 
     let (stream_reader, stream_writer) = tokio::io::split(stream);
     let (reader_tx, mut reader_rx) = mpsc::channel(1024);
@@ -567,6 +821,39 @@ async fn run_tls_actor(
     let mut writer: Option<tokio::io::WriteHalf<TlsClientStream>> = Some(stream_writer);
 
     loop {
+        // Pump chunks from export/bidi streams before waiting
+        {
+            let mut ids_to_remove = Vec::new();
+            for (id, rx) in &mut export_streams {
+                while let Ok(payload) = rx.try_recv() {
+                    if let Some(w) = &mut writer {
+                        let _ = crate::framing::write_frame(w, &payload).await;
+                    }
+                }
+                if rx.is_closed() {
+                    ids_to_remove.push(*id);
+                }
+            }
+            for id in ids_to_remove {
+                export_streams.remove(&id);
+            }
+
+            let mut ids_to_remove = Vec::new();
+            for (id, rx) in &mut bidi_streams {
+                while let Ok(payload) = rx.try_recv() {
+                    if let Some(w) = &mut writer {
+                        let _ = crate::framing::write_frame(w, &payload).await;
+                    }
+                }
+                if rx.is_closed() {
+                    ids_to_remove.push(*id);
+                }
+            }
+            for id in ids_to_remove {
+                bidi_streams.remove(&id);
+            }
+        }
+
         tokio::select! {
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { break; };
@@ -610,6 +897,51 @@ async fn run_tls_actor(
                                 }
                                 Err(_) => break,
                             }
+                        }
+                    }
+                    ActorCommand::ExportStream { id, initial_payload, chunk_rx, resp_tx } => {
+                        let write_ok = if let Some(w) = &mut writer {
+                            crate::framing::write_frame(w, &initial_payload).await.is_ok()
+                        } else { false };
+                        if !write_ok {
+                            drop(writer.take());
+                            drain_pending(&mut pending);
+                            let _ = resp_tx.send(Err(Error::ConnectionClosed));
+                            if !reconnect { break; }
+                            match tls_reconnect_loop(&addr, &cfg).await {
+                                Ok(new_stream) => {
+                                    let (nr, nw) = tokio::io::split(new_stream);
+                                    writer = Some(nw);
+                                    spawn_tls_reader(nr, reader_tx.clone());
+                                }
+                                Err(_) => break,
+                            }
+                        } else {
+                            let sender = PendingSender::Unary(Arc::new(MutexOneshotSender::new(resp_tx)));
+                            pending.insert(id, sender);
+                            export_streams.insert(id, chunk_rx);
+                        }
+                    }
+                    ActorCommand::ImportBidi { id, initial_payload, outbound_rx, inbound_tx } => {
+                        let sender = PendingSender::Stream(inbound_tx);
+                        pending.insert(id, sender);
+                        let write_ok = if let Some(w) = &mut writer {
+                            crate::framing::write_frame(w, &initial_payload).await.is_ok()
+                        } else { false };
+                        if !write_ok {
+                            drop(writer.take());
+                            drain_pending(&mut pending);
+                            if !reconnect { break; }
+                            match tls_reconnect_loop(&addr, &cfg).await {
+                                Ok(new_stream) => {
+                                    let (nr, nw) = tokio::io::split(new_stream);
+                                    writer = Some(nw);
+                                    spawn_tls_reader(nr, reader_tx.clone());
+                                }
+                                Err(_) => break,
+                            }
+                        } else {
+                            bidi_streams.insert(id, outbound_rx);
                         }
                     }
                 }
