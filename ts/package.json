@@ -1,6 +1,6 @@
 {
   "name": "@emaad-ansari/callwire",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "High-performance, bidirectional RPC over TCP with MessagePack framing — TypeScript/Node.js client & server",
   "main": "dist/index.js",
   "bin": {
