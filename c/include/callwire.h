@@ -157,6 +157,17 @@ int callwire_server_export(callwire_server_t *server, const char *func,
                            int (*fn_ptr)(callwire_value_t *, size_t, callwire_value_t *));
 
 /**
+ * Register a unary RPC handler with an opaque userdata pointer, passed back
+ * on every invocation. Lets language bindings (C++, Swift, etc.) route a
+ * single C-linkage trampoline to per-registration closures/objects instead
+ * of requiring one distinct function pointer per exported name.
+ * fn_ptr is called with (userdata, args, args_count, result_out).
+ * Must return 0 on success, non-zero on error.
+ */
+int callwire_server_export_ctx(callwire_server_t *server, const char *func, void *userdata,
+                               int (*fn_ptr)(void *, callwire_value_t *, size_t, callwire_value_t *));
+
+/**
  * Start accepting connections (blocks until error or close).
  */
 int callwire_server_serve(callwire_server_t *server);

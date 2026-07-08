@@ -7,10 +7,15 @@
 #include <pthread.h>
 
 typedef int (*callwire_handler_fn)(callwire_value_t *, size_t, callwire_value_t *);
+typedef int (*callwire_handler_ctx_fn)(void *, callwire_value_t *, size_t, callwire_value_t *);
 
 typedef struct {
     char *name;
+    /* Exactly one of fn/fn_ctx is set, distinguished by has_userdata. */
     callwire_handler_fn fn;
+    callwire_handler_ctx_fn fn_ctx;
+    void *userdata;
+    int has_userdata;
 } registry_entry_t;
 
 struct callwire_server {
@@ -74,9 +79,8 @@ callwire_server_t *callwire_server_new(const char *addr, int port) {
     return s;
 }
 
-int callwire_server_export(callwire_server_t *server, const char *func,
-                           int (*fn_ptr)(callwire_value_t *, size_t, callwire_value_t *)) {
-    if (!server || !func || !fn_ptr) {
+static int register_entry(callwire_server_t *server, const char *func, registry_entry_t entry) {
+    if (!server || !func) {
         callwire_error_set("invalid argument");
         return -1;
     }
@@ -87,6 +91,7 @@ int callwire_server_export(callwire_server_t *server, const char *func,
         return -1;
     }
     strcpy(name_copy, func);
+    entry.name = name_copy;
 
     pthread_mutex_lock(&server->registry_mu);
     if (server->entry_count == server->entry_cap) {
@@ -101,25 +106,50 @@ int callwire_server_export(callwire_server_t *server, const char *func,
         server->entries = new_entries;
         server->entry_cap = new_cap;
     }
-    server->entries[server->entry_count].name = name_copy;
-    server->entries[server->entry_count].fn = fn_ptr;
+    server->entries[server->entry_count] = entry;
     server->entry_count++;
     pthread_mutex_unlock(&server->registry_mu);
 
     return 0;
 }
 
-static callwire_handler_fn find_handler(callwire_server_t *server, const char *func) {
-    callwire_handler_fn fn = NULL;
+int callwire_server_export(callwire_server_t *server, const char *func,
+                           int (*fn_ptr)(callwire_value_t *, size_t, callwire_value_t *)) {
+    if (!fn_ptr) {
+        callwire_error_set("invalid argument");
+        return -1;
+    }
+    registry_entry_t entry = {0};
+    entry.fn = fn_ptr;
+    entry.has_userdata = 0;
+    return register_entry(server, func, entry);
+}
+
+int callwire_server_export_ctx(callwire_server_t *server, const char *func, void *userdata,
+                               int (*fn_ptr)(void *, callwire_value_t *, size_t, callwire_value_t *)) {
+    if (!fn_ptr) {
+        callwire_error_set("invalid argument");
+        return -1;
+    }
+    registry_entry_t entry = {0};
+    entry.fn_ctx = fn_ptr;
+    entry.userdata = userdata;
+    entry.has_userdata = 1;
+    return register_entry(server, func, entry);
+}
+
+static int find_handler(callwire_server_t *server, const char *func, registry_entry_t *out) {
+    int found = 0;
     pthread_mutex_lock(&server->registry_mu);
     for (size_t i = 0; i < server->entry_count; i++) {
         if (strcmp(server->entries[i].name, func) == 0) {
-            fn = server->entries[i].fn;
+            *out = server->entries[i];
+            found = 1;
             break;
         }
     }
     pthread_mutex_unlock(&server->registry_mu);
-    return fn;
+    return found;
 }
 
 static void write_error(int sockfd, uint64_t id, const char *error_type, const char *message) {
@@ -137,15 +167,17 @@ static void dispatch_request(callwire_server_t *server, int sockfd, callwire_wir
         return;
     }
 
-    callwire_handler_fn fn = find_handler(server, msg->func);
-    if (!fn) {
+    registry_entry_t entry;
+    if (!find_handler(server, msg->func, &entry)) {
         write_error(sockfd, msg->id, "NotFoundError", "function not exported");
         return;
     }
 
     callwire_value_t result;
     result.type = CALLWIRE_NULL;
-    int rc = fn(msg->args, msg->args_count, &result);
+    int rc = entry.has_userdata
+                 ? entry.fn_ctx(entry.userdata, msg->args, msg->args_count, &result)
+                 : entry.fn(msg->args, msg->args_count, &result);
 
     if (rc != 0) {
         write_error(sockfd, msg->id, "Error", "handler returned an error");
