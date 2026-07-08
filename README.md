@@ -77,6 +77,14 @@ const result = await remote.add(10, 20); // 30
 
 ---
 
+## Installation & Publishing
+
+- **npm**: `npm install -g @emaad-ansari/callwire` (latest version 2.0.3)
+- **cargo**: `cargo install callwire --version 2.0.3`
+- **pip**: `pip install callwire==2.0.3`
+
+These packages are automatically published on each release via the CI workflow.
+
 ## Orchestration (v2)
 
 Workers are auto-discovered by the `callwire init` CLI and declared in `callwire.toml`:
