@@ -8,7 +8,7 @@ Competitive analysis of the RPC framework landscape and Callwire's defensible ad
 
 | Library | Transport | Serialization | Schema | Languages | Streaming | Orchestration | Bidirectional |
 |---------|-----------|---------------|--------|-----------|-----------|---------------|---------------|
-| **Callwire** | Raw TCP | MessagePack | None | **12+ (Go, Python, Rust, TS, Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby)** | **All 4 patterns** | Built-in | Yes |
+| **Callwire v2.1** | Raw TCP | MessagePack | None | **5 shipped (Go, Python, Rust, TS, Java); 12+ roadmap** | **All 4 patterns** | Built-in | Yes |
 | **gRPC** | HTTP/2 | Protobuf | Required (`.proto`) | 11+ | All 4 patterns | External | Per-stream |
 | **protosocket** | Raw TCP | MsgPack/Protobuf | Optional | Rust | Transport-level | None | Yes |
 | **ZeroRPC** | ZeroMQ | MessagePack | None | Python (dead) | Server | None | No |
