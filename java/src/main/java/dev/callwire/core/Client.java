@@ -109,6 +109,62 @@ public class Client {
         }
     }
 
+    /**
+     * Client-streaming: send multiple chunks, receive single response.
+     */
+    public ExportStream exportStream(String func) throws IOException {
+        long id;
+        synchronized (idLock) {
+            id = ++nextId;
+        }
+
+        BlockingQueue<Map<String, Object>> respQueue = new LinkedBlockingQueue<>(1);
+        pending.put(id, respQueue);
+
+        try {
+            byte[] payload = Codec.encodeRequest(id, func, new ArrayList<>());
+            synchronized (writeLock) {
+                Framing.writeFrame(socket, payload);
+            }
+
+            return new ExportStream(this, id, respQueue, pending, writeLock);
+        } catch (IOException e) {
+            pending.remove(id);
+            throw e;
+        }
+    }
+
+    /**
+     * Bidirectional-streaming: send and receive chunks concurrently.
+     */
+    public BidiStream importBidi(String func) throws IOException {
+        long id;
+        synchronized (idLock) {
+            id = ++nextId;
+        }
+
+        BlockingQueue<Map<String, Object>> queue = new LinkedBlockingQueue<>(256);
+        pending.put(id, queue);
+
+        try {
+            byte[] payload = Codec.encodeRequest(id, func, new ArrayList<>(), true);
+            synchronized (writeLock) {
+                Framing.writeFrame(socket, payload);
+            }
+
+            return new BidiStream(this, id, queue, pending, writeLock);
+        } catch (IOException e) {
+            pending.remove(id);
+            throw e;
+        }
+    }
+
+    void writeFrame(byte[] payload) throws IOException {
+        synchronized (writeLock) {
+            Framing.writeFrame(socket, payload);
+        }
+    }
+
     private void readLoop() {
         try {
             while (connected) {
@@ -179,6 +235,102 @@ public class Client {
             Object result = nextMsg.get("result");
             advance();
             return result;
+        }
+    }
+}
+
+class ExportStream {
+    private final Client client;
+    private final long id;
+    private final BlockingQueue<Map<String, Object>> respQueue;
+    private final Map<Long, BlockingQueue<Map<String, Object>>> pending;
+
+    ExportStream(Client client, long id, BlockingQueue<Map<String, Object>> respQueue,
+                 Map<Long, BlockingQueue<Map<String, Object>>> pending, Object writeLock) {
+        this.client = client;
+        this.id = id;
+        this.respQueue = respQueue;
+        this.pending = pending;
+    }
+
+    public void send(Object chunk) throws IOException {
+        byte[] payload = Codec.encodeStreamChunk(id, chunk);
+        client.writeFrame(payload);
+    }
+
+    public Object closeAndRecv() throws IOException, CallwireException, TimeoutException {
+        byte[] payload = Codec.encodeStreamClose(id);
+        client.writeFrame(payload);
+
+        try {
+            Map<String, Object> msg = respQueue.poll(30, TimeUnit.SECONDS);
+            if (msg == null) {
+                throw new TimeoutException("closeAndRecv timeout");
+            }
+
+            String type = (String) msg.get("type");
+            if ("error".equals(type)) {
+                throw new CallwireException((String) msg.get("error_type"), (String) msg.get("message"));
+            }
+
+            return msg.get("result");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("closeAndRecv interrupted");
+        } finally {
+            pending.remove(id);
+        }
+    }
+}
+
+class BidiStream {
+    private final Client client;
+    private final long id;
+    private final BlockingQueue<Map<String, Object>> queue;
+    private final Map<Long, BlockingQueue<Map<String, Object>>> pending;
+    private boolean sentEnd = false;
+
+    BidiStream(Client client, long id, BlockingQueue<Map<String, Object>> queue,
+               Map<Long, BlockingQueue<Map<String, Object>>> pending, Object writeLock) {
+        this.client = client;
+        this.id = id;
+        this.queue = queue;
+        this.pending = pending;
+    }
+
+    public void send(Object chunk) throws IOException {
+        byte[] payload = Codec.encodeStreamChunk(id, chunk);
+        client.writeFrame(payload);
+    }
+
+    public void closeSend() throws IOException {
+        if (sentEnd) return;
+        sentEnd = true;
+        byte[] payload = Codec.encodeStreamEnd(id);
+        client.writeFrame(payload);
+    }
+
+    public Object recv() throws IOException, CallwireException, TimeoutException {
+        try {
+            Map<String, Object> msg = queue.poll(30, TimeUnit.SECONDS);
+            if (msg == null) {
+                throw new TimeoutException("recv timeout");
+            }
+
+            String type = (String) msg.get("type");
+            if ("stream_chunk".equals(type)) {
+                return msg.get("result");
+            } else if ("stream_end".equals(type)) {
+                pending.remove(id);
+                return null;
+            } else if ("error".equals(type)) {
+                pending.remove(id);
+                throw new CallwireException((String) msg.get("error_type"), (String) msg.get("message"));
+            }
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("recv interrupted");
         }
     }
 }
