@@ -1,6 +1,6 @@
 # Callwire
 
-**Callwire v2.1.0: High-performance, bidirectional RPC across 5 languages (Go, Python, Rust, TypeScript, Java) — over raw TCP with MessagePack framing. Roadmap: 12+ languages.**
+**Callwire v2.2.0: High-performance, bidirectional RPC across 9 languages (Go, Python, Rust, TypeScript, Java, C, C++, Swift, COBOL) — over raw TCP with MessagePack framing.**
 
 No schemas. No `.proto` files. No codegen. Export a function, call it from anywhere. **All 4 gRPC streaming patterns (unary, server-streaming, client-streaming, bidirectional), zero config.**
 
@@ -11,7 +11,7 @@ No schemas. No `.proto` files. No codegen. Export a function, call it from anywh
 - **Zero-schema RPC** — export any function, call it from any language
 - **All 4 gRPC patterns** — unary, server-streaming, client-streaming, bidirectional-streaming (full parity with gRPC, no `.proto` codegen)
 - **Bidirectional** — clients and servers call each other over the same socket
-- **5 languages shipped** — Go, Python, Rust, TypeScript, Java (all 4 patterns). Roadmap: C, C++, COBOL, C#, Kotlin, Swift, Ruby, and more
+- **9 languages shipped, 8 at full parity** — Go, Python, Rust, TypeScript, Java, C, C++, Swift all support all 4 patterns, both client and server. COBOL ships client + server for unary calls (its typical legacy-integration role). Roadmap: C#, Kotlin, Ruby
 - **v3 Orchestration** — one `callwire.toml` spawns and connects workers automatically
 - **Dynamic routing** — connect to registry, call any function without knowing worker addresses
 - **TLS & mTLS** — secure transport with optional client certificate auth
@@ -93,19 +93,113 @@ server.serve("localhost", 9090);
 // 2. Call a remote function
 Client client = new Client();
 client.connect("localhost", 9090);
-Object result = client.call("add", Arrays.asList(10L, 20L)); // 30
+long result = client.callLong("add", 10L, 20L); // 30
 ```
+
+### C
+
+```c
+#include "callwire.h"
+
+CALLWIRE_EXPORT_INT2(add, a, b) { return a + b; }
+
+callwire_server_t *server = callwire_server_new("0.0.0.0", 9090);
+callwire_server_export(server, "add", add);
+callwire_server_serve(server);
+
+// Client
+callwire_client_t *client = callwire_client_connect("localhost", 9090);
+int64_t result;
+callwire_call_ints(client, "add", (int64_t[]){10, 20}, 2, &result); // 30
+```
+
+### C++
+
+```cpp
+#include "callwire.hpp"
+
+callwire::Server server("0.0.0.0", 9090);
+server.exportFunc("add", [](int64_t a, int64_t b) { return a + b; });
+server.serve();
+
+// Client
+callwire::Client client("localhost", 9090);
+int64_t result = client.call<int64_t>("add", 10, 20); // 30
+```
+
+### Swift
+
+```swift
+import Callwire
+
+let server = try Server(host: "0.0.0.0", port: 9090)
+try server.exportTyped("add") { (a: Int64, b: Int64) in a + b }
+try server.serve()
+
+// Client
+let client = try Client(host: "localhost", port: 9090)
+let result = try client.add(10, 20) // 30 — dynamic call, no .call("add", ...)
+```
+
+### COBOL
+
+Client + server, unary calls (COBOL's typical legacy-integration role — connecting to/from modern services with simple numeric/string payloads). Handlers are separate compiled subprograms registered by name:
+
+```cobol
+*> Server: register a handler subprogram
+CALL "callwire_cobol_export_int2" USING
+    BY VALUE WS-SERVER-PTR BY REFERENCE WS-FUNC-ADD
+    BY REFERENCE WS-PROG-ADD RETURNING WS-RC END-CALL.
+
+*> Client: one CALL statement
+CALL "callwire_cobol_call_ints" USING
+    BY VALUE WS-CLIENT-PTR BY REFERENCE WS-FUNC-ADD
+    BY REFERENCE WS-ARGS BY VALUE WS-ARGC
+    BY REFERENCE WS-INT-RESULT RETURNING WS-RC END-CALL.
+```
+
+Full setup → [cobol/README.md](cobol/README.md)
 
 ---
 
-## Installation & Publishing
+## Installation
 
-- **npm**: `npm install @emaad-ansari/callwire` (v2.1.0)
-- **PyPI**: `pip install callwire==2.1.0`
-- **Cargo**: `cargo add callwire --version 2.1.0`
-- **Maven Central**: `dev.callwire:callwire:2.1.0`
+### Published packages
 
-All packages auto-publish via CI workflow on version bump.
+- **npm**: `npm install @emaad-ansari/callwire` (v2.2.0)
+- **PyPI**: `pip install callwire==2.2.0`
+- **Cargo**: `cargo add callwire --version 2.2.0`
+- **Maven Central**: `dev.callwire:callwire:2.2.0`
+
+These auto-publish via CI on version bump.
+
+### Build from source (C, C++, Swift, COBOL)
+
+These SDKs aren't on a package registry yet — build against this repo directly.
+
+**C** — CMake, no external dependencies:
+```sh
+cd c && mkdir build && cd build
+cmake -DCALLWIRE_WITH_TLS=OFF .. && cmake --build . && ctest
+```
+Produces `libcallwire_core.{a,dylib}` + the `callwire` CLI. `#include "callwire.h"`, link against the static or shared lib.
+
+**C++** — header-only (`cpp/include/callwire/callwire.hpp`), links directly against the C core sources:
+```sh
+cd cpp && mkdir build && cd build
+cmake .. && cmake --build . && ctest
+```
+
+**Swift** — Swift Package Manager manifest exists (`swift/Package.swift`), but if `swift build` fails with a `PackageDescription`/`Foundation` SDK-mismatch error in your toolchain, use the bypass build script instead (see [swift/README.md](swift/README.md) for why):
+```sh
+cd swift && ./build.sh
+```
+
+**COBOL** — requires GnuCOBOL (`brew install gnucobol` / `apt install gnucobol`):
+```sh
+cd cobol && ./build.sh
+```
+Builds and runs both the import-side and export-side (COBOL-hosted server) round-trip tests automatically.
 
 ## Orchestration (v2)
 
@@ -315,6 +409,21 @@ cd rust && cargo test -- --nocapture
 
 # TypeScript
 cd ts && npm test
+
+# Java
+cd java && mvn test
+
+# C
+cd c && mkdir -p build && cd build && cmake -DCALLWIRE_WITH_TLS=OFF .. && cmake --build . && ctest
+
+# C++
+cd cpp && mkdir -p build && cd build && cmake .. && cmake --build . && ctest
+
+# Swift
+cd swift && ./build.sh
+
+# COBOL
+cd cobol && ./build.sh
 ```
 
 ---
@@ -353,7 +462,7 @@ Full breakdown → [benchmarks/compare_grpc.md](benchmarks/compare_grpc.md)
 | **Transport** | Raw TCP (4-byte length + msgpack) | HTTP/2 + HPACK |
 | **Bidirectional** | Same socket, any order | HTTP/2 streams (half-duplex per stream) |
 | **Orchestration** | Built-in `callwire.toml` + `init()` | External (Kubernetes, Consul, etc.) |
-| **Languages** | **12+ (Go, Python, Rust, TS, Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby)** | 11+ languages |
+| **Languages** | **9 shipped (Go, Python, Rust, TS, Java, C, C++, Swift, COBOL), roadmap C#/Kotlin/Ruby** | 11+ languages |
 | **Streaming** | **All 4 (unary, server, client, bidi)** | All 4 |
 | **Browser** | No | Yes (gRPC-Web) |
 | **Ecosystem** | Minimal | Envoy, gRPC-Gateway, health probes, reflection |
@@ -372,7 +481,7 @@ Python MessagePack-over-ZeroMQ RPC. Zero hits ~100K req/s on TCP but is Python-o
 
 ### vs MagicOnion (C#)
 
-MessagePack-over-gRPC for .NET/Unity. Shares Callwire's zero-schema philosophy (C# interfaces instead of `.proto`) but is C#-only and inherits gRPC's HTTP/2 overhead. Callwire is 1.3–1.7× faster on wire latency and spans 12+ runtimes including a dedicated C# SDK.
+MessagePack-over-gRPC for .NET/Unity. Shares Callwire's zero-schema philosophy (C# interfaces instead of `.proto`) but is C#-only and inherits gRPC's HTTP/2 overhead. Callwire is 1.3–1.7× faster on wire latency and spans 9 runtimes today, with a C# SDK on the roadmap.
 
 ### vs Cap'n Proto RPC
 
@@ -392,7 +501,7 @@ Feature-rich multi-transport RPC (TCP/WS/HTTP3/QUIC/SharedMemory) for C++/TS/Swi
 
 Callwire's defensible advantages:
 
-1. **Zero-schema across 12+ languages** — no other library lets you export a function in Go/Python/Rust/TS/Java/C/C++/COBOL/C#/Kotlin/Swift/Ruby and call it from any of the others without a schema definition or codegen step. Same zero-schema wire format everywhere.
+1. **Zero-schema across 9 shipped languages** — no other library lets you export a function in Go/Python/Rust/TS/Java/C/C++/Swift/COBOL and call it from any of the others without a schema definition or codegen step. Same zero-schema wire format everywhere. C#/Kotlin/Ruby on the roadmap.
 
 2. **All 4 gRPC patterns, zero-config** — unary, server-streaming, client-streaming, bidi-streaming all supported. No `.proto` files, no codegen. Export a function that streams; it works from any language.
 

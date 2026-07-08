@@ -1,6 +1,6 @@
 [package]
 name = "callwire"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "High-performance bidirectional RPC over TCP with MessagePack framing — Go, Python, Rust interop"
