@@ -27,12 +27,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # The Go integration tests expect the Python virtualenv at python/.venv/bin/python
-      - name: Setup Python Virtual Environment
-        run: |
-          cd python
-          python -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install msgpack
+          - name: Setup Python Virtual Environment
+            run: |
+              cd python
+              python -m venv .venv
+              .venv/bin/pip install --upgrade pip
+              .venv/bin/pip install -r requirements.txt
 
       - name: Run Go tests
         run: |
@@ -50,10 +50,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install msgpack
+- name: Install dependencies
+          run: |
+            python -m pip install --upgrade pip
+            pip install -r python/requirements.txt
 
       - name: Run Python tests
         run: |
