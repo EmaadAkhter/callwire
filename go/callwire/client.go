@@ -446,3 +446,246 @@ func ImportStream[Resp any](c *Client, ctx context.Context, funcName string, arg
 
 	return results, errc
 }
+
+// ClientStream encapsulates a client-streaming call: client sends multiple chunks, server sends response.
+// Use: stream := callwire.ClientStream[int](c, ctx, "process_items", nil)
+// stream.Send(item1); stream.Send(item2); resp, err := stream.CloseAndRecv()
+type ClientStream[Req, Resp any] struct {
+	c       *Client
+	ctx     context.Context
+	id      uint64
+	reqChan chan interface{}
+	respCh  chan wireMessage
+	done    bool
+}
+
+// Send enqueues a chunk to be sent to the server. Blocks if buffer is full.
+func (s *ClientStream[Req, Resp]) Send(req Req) error {
+	if s.done {
+		return &WireError{ErrorType: "StreamClosed", Message: "stream already closed"}
+	}
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.reqChan <- req:
+		return nil
+	}
+}
+
+// CloseAndRecv signals end of chunks and waits for the server's single response.
+func (s *ClientStream[Req, Resp]) CloseAndRecv() (Resp, error) {
+	var zero Resp
+	s.done = true
+	close(s.reqChan)
+
+	// Send stream_close
+	c := s.c
+	c.writeMu.Lock()
+	payload, _ := encodeStreamClose(s.id)
+	err := writeFrame(c.conn, payload)
+	c.writeMu.Unlock()
+	if err != nil {
+		return zero, err
+	}
+
+	// Wait for response or error
+	select {
+	case msg := <-s.respCh:
+		if msg.Type == "error" {
+			return zero, &WireError{ErrorType: msg.ErrorType, Message: msg.Message}
+		}
+		if msg.Type == "response" {
+			raw, _ := msgpack.Marshal(msg.Result)
+			var resp Resp
+			if err := msgpack.Unmarshal(raw, &resp); err != nil {
+				return zero, err
+			}
+			return resp, nil
+		}
+		return zero, &WireError{ErrorType: "ProtocolError", Message: "unexpected message type"}
+	case <-s.ctx.Done():
+		return zero, s.ctx.Err()
+	}
+}
+
+// ExportStream initiates a client-streaming RPC call. Caller sends chunks via stream.Send,
+// then calls stream.CloseAndRecv to get the final response.
+func ExportStream[Req, Resp any](c *Client, ctx context.Context, funcName string) *ClientStream[Req, Resp] {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
+		_ = cancel
+	}
+
+	id := atomic.AddUint64(&c.nextID, 1)
+	respCh := make(chan wireMessage, 1)
+	reqChan := make(chan interface{}, 64)
+
+	c.pendingMu.Lock()
+	c.pending[id] = respCh
+	c.pendingMu.Unlock()
+
+	payload, _ := encodeRequest(id, funcName, []interface{}{})
+
+	c.mu.Lock()
+	conn := c.conn
+	closed := c.closed
+	c.mu.Unlock()
+
+	if !closed && conn != nil {
+		c.writeMu.Lock()
+		writeFrame(conn, payload)
+		c.writeMu.Unlock()
+	}
+
+	stream := &ClientStream[Req, Resp]{
+		c:       c,
+		ctx:     ctx,
+		id:      id,
+		reqChan: reqChan,
+		respCh:  respCh,
+	}
+
+	// Background goroutine sends chunks as they arrive in reqChan.
+	go func() {
+		for req := range reqChan {
+			raw, _ := msgpack.Marshal(req)
+			c.writeMu.Lock()
+			chunk, _ := encodeStreamChunk(id, raw)
+			writeFrame(c.conn, chunk)
+			c.writeMu.Unlock()
+		}
+	}()
+
+	return stream
+}
+
+// BidiStream encapsulates a bidirectional-streaming call: both client and server send chunks concurrently.
+type BidiStream[Req, Resp any] struct {
+	c           *Client
+	ctx         context.Context
+	id          uint64
+	sendChan    chan interface{}
+	recvChan    chan wireMessage
+	clientDone  bool
+	serverDone  bool
+	serverEnd   chan struct{}
+	mu          sync.Mutex
+}
+
+// Send enqueues a chunk to be sent to the server.
+func (s *BidiStream[Req, Resp]) Send(req Req) error {
+	s.mu.Lock()
+	if s.clientDone {
+		s.mu.Unlock()
+		return &WireError{ErrorType: "StreamClosed", Message: "client side closed"}
+	}
+	s.mu.Unlock()
+
+	raw, _ := msgpack.Marshal(req)
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.sendChan <- raw:
+		return nil
+	}
+}
+
+// Recv waits for the next chunk from the server. Returns nil for Resp when server is done.
+func (s *BidiStream[Req, Resp]) Recv() (Resp, error) {
+	var zero Resp
+	select {
+	case <-s.ctx.Done():
+		return zero, s.ctx.Err()
+	case msg := <-s.recvChan:
+		switch msg.Type {
+		case "stream_chunk":
+			raw, _ := msgpack.Marshal(msg.Result)
+			var resp Resp
+			if err := msgpack.Unmarshal(raw, &resp); err != nil {
+				return zero, err
+			}
+			return resp, nil
+		case "stream_end":
+			s.mu.Lock()
+			s.serverDone = true
+			s.mu.Unlock()
+			close(s.serverEnd)
+			return zero, nil // caller checks if Recv returned nil to know stream ended
+		case "error":
+			return zero, &WireError{ErrorType: msg.ErrorType, Message: msg.Message}
+		}
+	}
+	return zero, &WireError{ErrorType: "ProtocolError", Message: "unexpected message type"}
+}
+
+// CloseSend signals the client side is done sending. Must still call Recv in a loop until it returns nil.
+func (s *BidiStream[Req, Resp]) CloseSend() error {
+	s.mu.Lock()
+	if s.clientDone {
+		s.mu.Unlock()
+		return nil
+	}
+	s.clientDone = true
+	s.mu.Unlock()
+
+	close(s.sendChan)
+
+	c := s.c
+	c.writeMu.Lock()
+	payload, _ := encodeStreamEnd(s.id)
+	err := writeFrame(c.conn, payload)
+	c.writeMu.Unlock()
+	return err
+}
+
+// ImportBidi initiates a bidirectional-streaming RPC call.
+func ImportBidi[Req, Resp any](c *Client, ctx context.Context, funcName string) *BidiStream[Req, Resp] {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
+		_ = cancel
+	}
+
+	id := atomic.AddUint64(&c.nextID, 1)
+	recvChan := make(chan wireMessage, 256)
+	sendChan := make(chan interface{}, 64)
+
+	c.pendingMu.Lock()
+	c.pending[id] = recvChan
+	c.pendingMu.Unlock()
+
+	payload, _ := encodeBidiRequest(id, funcName, []interface{}{})
+
+	c.mu.Lock()
+	conn := c.conn
+	closed := c.closed
+	c.mu.Unlock()
+
+	if !closed && conn != nil {
+		c.writeMu.Lock()
+		writeFrame(conn, payload)
+		c.writeMu.Unlock()
+	}
+
+	stream := &BidiStream[Req, Resp]{
+		c:         c,
+		ctx:       ctx,
+		id:        id,
+		sendChan:  sendChan,
+		recvChan:  recvChan,
+		serverEnd: make(chan struct{}),
+	}
+
+	// Background goroutine sends chunks as they arrive.
+	go func() {
+		for req := range sendChan {
+			c.writeMu.Lock()
+			chunk, _ := encodeStreamChunk(id, req)
+			writeFrame(c.conn, chunk)
+			c.writeMu.Unlock()
+		}
+	}()
+
+	return stream
+}
