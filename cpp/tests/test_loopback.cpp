@@ -18,6 +18,14 @@ int main() {
         return callwire::Value("Hello, " + args[0].asString() + "!");
     });
 
+    // Typed exportFunc overload — no vector<Value>/asInt64() boilerplate.
+    server.exportFunc("addTyped", [](int64_t a, int64_t b) -> int64_t {
+        return a + b;
+    });
+    server.exportFunc("greetTyped", [](std::string name) -> std::string {
+        return "Hello, " + name + "!";
+    });
+
     // A second closure capturing external state — exercises that each
     // registration gets its own routed handler, not a shared dispatch slot.
     int callCount = 0;
@@ -38,6 +46,20 @@ int main() {
         auto greeting = client.call("greet", {callwire::Value("World")});
         assert(greeting.asString() == "Hello, World!");
         std::cout << "test_unary_greet: OK\n";
+
+        // Typed call<R> overload — no Value() wrapping, no .asInt64().
+        int64_t typedSum = client.call<int64_t>("addTyped", 10, 20);
+        assert(typedSum == 30);
+        std::cout << "test_typed_call_add: OK (" << typedSum << ")\n";
+
+        std::string typedGreeting = client.call<std::string>("greetTyped", std::string("World"));
+        assert(typedGreeting == "Hello, World!");
+        std::cout << "test_typed_call_greet: OK (" << typedGreeting << ")\n";
+
+        // Typed exportFunc + typed call round trip together (both directions minimized).
+        int64_t roundTrip = client.call<int64_t>("addTyped", 1, 2);
+        assert(roundTrip == 3);
+        std::cout << "test_typed_export_and_call: OK (" << roundTrip << ")\n";
 
         auto c1 = client.call("counter");
         auto c2 = client.call("counter");

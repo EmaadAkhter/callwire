@@ -19,6 +19,9 @@ extern "C" {
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace callwire {
@@ -168,6 +171,12 @@ public:
         return std::vector<uint8_t>(d, d + raw_.val.bin_val.len);
     }
 
+    // Generic typed accessor — as<int64_t>()/as<double>()/as<bool>()/as<std::string>()
+    // dispatch to the matching asXxx() above. Lets Client::call<T>() convert
+    // a result without the caller needing to name the accessor explicitly.
+    template <typename T>
+    T as() const;
+
     // Returns a non-owning view of the underlying C struct — valid only for
     // the lifetime of this Value. Used internally when passing args to the C ABI.
     const callwire_value_t &raw() const { return raw_; }
@@ -238,6 +247,11 @@ inline Value Value::deepCopy(const callwire_value_t &src) {
     }
 }
 
+template <> inline int64_t Value::as<int64_t>() const { return asInt64(); }
+template <> inline double Value::as<double>() const { return asDouble(); }
+template <> inline bool Value::as<bool>() const { return asBool(); }
+template <> inline std::string Value::as<std::string>() const { return asString(); }
+
 // ---------------------------------------------------------------------------
 // Exceptions
 // ---------------------------------------------------------------------------
@@ -292,6 +306,17 @@ public:
             throw CallwireException(callwire_error());
         }
         return Value::adopt(result);
+    }
+
+    // Variadic typed call: no Value() wrapping, no braces, no .asXxx() on the
+    // result — call<int64_t>("add", 10, 20) instead of
+    // call("add", {Value(10), Value(20)}).asInt64().
+    template <typename R, typename... Args>
+    R call(const std::string &func, Args... args) {
+        std::vector<Value> values;
+        values.reserve(sizeof...(args));
+        (values.emplace_back(Value(args)), ...);
+        return call(func, values).template as<R>();
     }
 
     // Server-streaming: begin a stream, then call recv() repeatedly.
@@ -417,6 +442,36 @@ private:
 // CallwireException (or any std::exception) to send an error response.
 using Handler = std::function<Value(const std::vector<Value> &)>;
 
+// Deduces a callable's argument/return types from its operator() (works for
+// non-generic lambdas and std::function). Powers the typed exportFunc overload
+// below so `[](int64_t a, int64_t b) { return a + b; }` doesn't need manual
+// Value unpacking/wrapping.
+template <typename F>
+struct function_traits : function_traits<decltype(&F::operator())> {};
+
+template <typename C, typename R, typename... Args>
+struct function_traits<R (C::*)(Args...) const> {
+    using ReturnType = R;
+    using ArgsTuple = std::tuple<Args...>;
+    static constexpr size_t arity = sizeof...(Args);
+};
+
+template <typename F, size_t... I>
+Handler makeTypedHandlerImpl(F lambda, std::index_sequence<I...>) {
+    using traits = function_traits<F>;
+    return [lambda](const std::vector<Value> &args) -> Value {
+        if (args.size() != traits::arity) {
+            throw CallwireException("wrong number of arguments");
+        }
+        return Value(lambda(args[I].template as<typename std::tuple_element<I, typename traits::ArgsTuple>::type>()...));
+    };
+}
+
+template <typename F>
+Handler makeTypedHandler(F lambda) {
+    return makeTypedHandlerImpl(std::move(lambda), std::make_index_sequence<function_traits<F>::arity>{});
+}
+
 class Server {
 public:
     Server(const std::string &addr, int port) {
@@ -450,6 +505,18 @@ public:
         if (rc != 0) {
             throw CallwireException(std::string("export failed: ") + callwire_error());
         }
+    }
+
+    // Typed overload: [](int64_t a, int64_t b) { return a + b; } instead of
+    // [](const std::vector<Value>& args) -> Value { return Value(args[0].asInt64() + ...); }
+    // SFINAE'd out when F is already callable as (const std::vector<Value>&) -> Value
+    // (i.e. already matches the untyped Handler signature above) so existing
+    // untyped call sites keep resolving to the non-template overload instead
+    // of colliding with this one.
+    template <typename F,
+              typename std::enable_if<!std::is_invocable_r<Value, F, const std::vector<Value> &>::value, int>::type = 0>
+    void exportFunc(const std::string &name, F lambda) {
+        exportFunc(name, makeTypedHandler(std::move(lambda)));
     }
 
     void serve() {
