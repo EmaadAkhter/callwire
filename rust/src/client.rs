@@ -564,14 +564,26 @@ async fn run_actor(
     let mut writer = Some(stream_writer);
 
     loop {
-        // Pump chunks from export/bidi streams before waiting
-        {
+        // Pump chunks from export/bidi streams before waiting.
+        // Only drain the channel when a writer is actually connected — if the
+        // socket dropped mid-reconnect, leave payloads queued in the mpsc
+        // channel rather than pulling them out via try_recv() and silently
+        // discarding them when there's nowhere to write them.
+        if writer.is_some() {
             let mut ids_to_remove = Vec::new();
             for (id, rx) in &mut export_streams {
                 while let Ok(payload) = rx.try_recv() {
                     if let Some(w) = &mut writer {
-                        let _ = crate::framing::write_frame(w, &payload).await;
+                        if crate::framing::write_frame(w, &payload).await.is_err() {
+                            writer = None;
+                            break;
+                        }
+                    } else {
+                        break;
                     }
+                }
+                if writer.is_none() {
+                    break;
                 }
                 if rx.is_closed() {
                     ids_to_remove.push(*id);
@@ -580,13 +592,23 @@ async fn run_actor(
             for id in ids_to_remove {
                 export_streams.remove(&id);
             }
+        }
 
+        if writer.is_some() {
             let mut ids_to_remove = Vec::new();
             for (id, rx) in &mut bidi_streams {
                 while let Ok(payload) = rx.try_recv() {
                     if let Some(w) = &mut writer {
-                        let _ = crate::framing::write_frame(w, &payload).await;
+                        if crate::framing::write_frame(w, &payload).await.is_err() {
+                            writer = None;
+                            break;
+                        }
+                    } else {
+                        break;
                     }
+                }
+                if writer.is_none() {
+                    break;
                 }
                 if rx.is_closed() {
                     ids_to_remove.push(*id);
@@ -821,14 +843,26 @@ async fn run_tls_actor(
     let mut writer: Option<tokio::io::WriteHalf<TlsClientStream>> = Some(stream_writer);
 
     loop {
-        // Pump chunks from export/bidi streams before waiting
-        {
+        // Pump chunks from export/bidi streams before waiting.
+        // Only drain the channel when a writer is actually connected — if the
+        // socket dropped mid-reconnect, leave payloads queued in the mpsc
+        // channel rather than pulling them out via try_recv() and silently
+        // discarding them when there's nowhere to write them.
+        if writer.is_some() {
             let mut ids_to_remove = Vec::new();
             for (id, rx) in &mut export_streams {
                 while let Ok(payload) = rx.try_recv() {
                     if let Some(w) = &mut writer {
-                        let _ = crate::framing::write_frame(w, &payload).await;
+                        if crate::framing::write_frame(w, &payload).await.is_err() {
+                            writer = None;
+                            break;
+                        }
+                    } else {
+                        break;
                     }
+                }
+                if writer.is_none() {
+                    break;
                 }
                 if rx.is_closed() {
                     ids_to_remove.push(*id);
@@ -837,13 +871,23 @@ async fn run_tls_actor(
             for id in ids_to_remove {
                 export_streams.remove(&id);
             }
+        }
 
+        if writer.is_some() {
             let mut ids_to_remove = Vec::new();
             for (id, rx) in &mut bidi_streams {
                 while let Ok(payload) = rx.try_recv() {
                     if let Some(w) = &mut writer {
-                        let _ = crate::framing::write_frame(w, &payload).await;
+                        if crate::framing::write_frame(w, &payload).await.is_err() {
+                            writer = None;
+                            break;
+                        }
+                    } else {
+                        break;
                     }
+                }
+                if writer.is_none() {
+                    break;
                 }
                 if rx.is_closed() {
                     ids_to_remove.push(*id);

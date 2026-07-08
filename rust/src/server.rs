@@ -423,7 +423,9 @@ pub(crate) async fn run_accept_loop(listener: TcpListener, mut rx: tokio::sync::
 async fn handle_connection(socket: TcpStream, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
     let (mut reader, stream_writer) = socket.into_split();
     let writer = Arc::new(tokio::sync::Mutex::new(stream_writer));
-    let stream_inputs: Arc<Mutex<HashMap<u64, mpsc::Sender<StreamInputMsg>>>> =
+    // bool = is_bidi: client-stream calls must terminate with stream_close,
+    // bidi calls must terminate with stream_end — the two are not interchangeable.
+    let stream_inputs: Arc<Mutex<HashMap<u64, (mpsc::Sender<StreamInputMsg>, bool)>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     loop {
@@ -437,17 +439,30 @@ async fn handle_connection(socket: TcpStream, mut shutdown_rx: tokio::sync::watc
 
                                 // Route follow-up frames of an in-progress streaming-input call
                                 if msg_type == "stream_chunk" || msg_type == "stream_close" || msg_type == "stream_end" {
-                                    let sender = {
+                                    let entry = {
                                         let inputs = stream_inputs.lock().unwrap();
                                         inputs.get(&msg.id).cloned()
                                     };
-                                    if let Some(sender) = sender {
-                                        let signal = if msg_type == "stream_chunk" {
-                                            StreamInputMsg::Chunk(msg.result.unwrap_or(Value::Nil))
+                                    if let Some((sender, is_bidi)) = entry {
+                                        if msg_type == "stream_chunk" {
+                                            let _ = sender.send(StreamInputMsg::Chunk(msg.result.unwrap_or(Value::Nil))).await;
                                         } else {
-                                            StreamInputMsg::Close
-                                        };
-                                        let _ = sender.send(signal).await;
+                                            let expected = if is_bidi { "stream_end" } else { "stream_close" };
+                                            if msg_type != expected {
+                                                if let Ok(payload) = crate::codec::pack_error(
+                                                    msg.id,
+                                                    "ProtocolError",
+                                                    &format!("expected '{}' to terminate this call, got '{}'", expected, msg_type),
+                                                ) {
+                                                    let mut w = writer.lock().await;
+                                                    let _ = crate::framing::write_frame(&mut *w, &payload).await;
+                                                }
+                                            }
+                                            // Forward Close regardless of mismatch so the handler
+                                            // unblocks instead of hanging after a malformed terminator.
+                                            let _ = sender.send(StreamInputMsg::Close).await;
+                                            stream_inputs.lock().unwrap().remove(&msg.id);
+                                        }
                                     }
                                     continue;
                                 }
@@ -468,7 +483,7 @@ async fn handle_connection(socket: TcpStream, mut shutdown_rx: tokio::sync::watc
                                     Some(RegistryEntry::Bidi(_)) if is_bidi => {
                                         let (tx, rx) = mpsc::channel(256);
                                         let id = msg.id;
-                                        stream_inputs.lock().unwrap().insert(id, tx);
+                                        stream_inputs.lock().unwrap().insert(id, (tx, true));
                                         let writer_clone = writer.clone();
                                         let inputs_clone = stream_inputs.clone();
                                         tokio::spawn(async move {
@@ -478,7 +493,7 @@ async fn handle_connection(socket: TcpStream, mut shutdown_rx: tokio::sync::watc
                                     }
                                     Some(RegistryEntry::ClientStream(_)) if !is_bidi => {
                                         let (tx, rx) = mpsc::channel(256);
-                                        stream_inputs.lock().unwrap().insert(msg.id, tx);
+                                        stream_inputs.lock().unwrap().insert(msg.id, (tx, false));
                                         let writer_clone = writer.clone();
                                         let inputs_clone = stream_inputs.clone();
                                         let id = msg.id;
