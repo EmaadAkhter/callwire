@@ -1,4 +1,5 @@
 import * as net from 'net';
+import * as tls from 'tls';
 import { EventEmitter } from 'events';
 import { BufferedReader, writeFrame } from './framing';
 import { packRequest, unpack, WireMessage } from './codec';
@@ -89,11 +90,26 @@ type PendingStream = {
 
 type Pending = PendingUnary | PendingStream;
 
+export interface TlsClientOptions {
+  /** PEM-encoded CA certificate for server verification (optional; skip to trust self-signed) */
+  ca?: string;
+  /** PEM-encoded client certificate for mTLS (optional) */
+  cert?: string;
+  /** PEM-encoded client key for mTLS (optional) */
+  key?: string;
+  /** Skip server certificate verification. Default: false */
+  rejectUnauthorized?: boolean;
+  /** Override SNI servername (defaults to host) */
+  servername?: string;
+}
+
 export interface ClientOptions {
   /** Auto-reconnect on disconnect with exponential backoff. Default: false */
   reconnect?: boolean;
   /** Timeout for unary calls in milliseconds. Default: 30000 */
   timeout?: number;
+  /** TLS options — if set, connect over TLS */
+  tls?: TlsClientOptions;
 }
 
 /**
@@ -117,6 +133,7 @@ export class Client extends EventEmitter {
   private connected = false;
   private readonly reconnect: boolean;
   private readonly timeout: number;
+  private readonly tlsOpts: TlsClientOptions | undefined;
   private host = '';
   private port = 0;
 
@@ -129,6 +146,7 @@ export class Client extends EventEmitter {
     super();
     this.reconnect = opts.reconnect ?? false;
     this.timeout = opts.timeout ?? 30_000;
+    this.tlsOpts = opts.tls;
   }
 
   /**
@@ -160,12 +178,30 @@ export class Client extends EventEmitter {
 
   private async _connectSocket(host: string, port: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const sock = net.createConnection({ host, port }, () => {
-        this.socket = sock;
-        this.connected = true;
-        this._startReading();
-        resolve();
-      });
+      let sock: net.Socket;
+      if (this.tlsOpts) {
+        sock = tls.connect({
+          host,
+          port,
+          ca: this.tlsOpts.ca,
+          cert: this.tlsOpts.cert,
+          key: this.tlsOpts.key,
+          rejectUnauthorized: this.tlsOpts.rejectUnauthorized ?? true,
+          servername: this.tlsOpts.servername ?? host,
+        }, () => {
+          this.socket = sock;
+          this.connected = true;
+          this._startReading();
+          resolve();
+        });
+      } else {
+        sock = net.createConnection({ host, port }, () => {
+          this.socket = sock;
+          this.connected = true;
+          this._startReading();
+          resolve();
+        });
+      }
       sock.once('error', reject);
     });
   }
@@ -409,6 +445,14 @@ export class Client extends EventEmitter {
     this.connected = false;
     this.socket?.destroy();
     this.socket = null;
+
+    const err = new Error('Connection closed');
+    for (const entry of this.pending.values()) {
+      if (entry.kind === 'unary') entry.reject(err);
+      else entry.error(err);
+    }
+    this.pending.clear();
+
     for (const worker of this.workerClients.values()) {
       worker.close();
     }

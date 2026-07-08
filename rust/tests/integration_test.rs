@@ -157,6 +157,67 @@ async fn test_concurrent_calls() {
 }
 
 #[tokio::test]
+async fn test_close_during_call() {
+    // Register a handler that blocks so we can close before it returns
+    callwire::register_unary("slow_add", |(a, b): (i64, i64)| -> Result<i64, String> {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        Ok(a + b)
+    });
+
+    let handle = setup_server("127.0.0.1:19608").await;
+    let client = Client::connect("127.0.0.1:19608").await.unwrap();
+
+    let client2 = client.clone();
+
+    // Fire a slow call in a background task
+    let join = tokio::spawn(async move {
+        client2.import::<i64, _>("slow_add", &(1i64, 2i64)).await
+    });
+
+    // Give the call time to reach the pending map
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Close the client while the call is in-flight
+    client.close();
+
+    let result = join.await.unwrap();
+    assert!(result.is_err(), "expected error after close, got: {:?}", result);
+
+    handle.close();
+}
+
+#[tokio::test]
+async fn test_close_during_stream() {
+    let handle = setup_server("127.0.0.1:19609").await;
+    let client = Client::connect("127.0.0.1:19609").await.unwrap();
+
+    let mut stream = client.import_stream::<i64, _>("count_up", &(100i64,)).await.unwrap();
+
+    // Read a few chunks
+    let first = stream.next().await;
+    assert!(first.is_some());
+    assert_eq!(first.unwrap().unwrap(), 1);
+    let second = stream.next().await;
+    assert!(second.is_some());
+    assert_eq!(second.unwrap().unwrap(), 2);
+
+    // Close the client mid-stream
+    client.close();
+
+    // After close, the stream should terminate cleanly
+    let mut count = 2;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(_) => count += 1,
+            Err(_) => break,
+        }
+    }
+    assert!(count < 100, "stream should have terminated before reaching 100 (got {count} chunks)");
+
+    handle.close();
+}
+
+#[tokio::test]
 async fn test_batch() {
     let handle = setup_server("127.0.0.1:19607").await;
     let client = Client::connect("127.0.0.1:19607").await.unwrap();
