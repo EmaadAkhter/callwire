@@ -183,7 +183,7 @@ impl Client {
                         };
                         workers.insert(addr.clone(), client);
                     }
-                    Ok(Some(workers.get(&addr).unwrap().clone()))
+                    Ok(Some(workers.get(&addr).expect("worker just inserted").clone()))
                 }
             }
         }.boxed()

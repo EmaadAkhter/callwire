@@ -34,10 +34,10 @@ use tokio::io::{AsyncWriteExt, split};
 use crate::errors::{Error, Result};
 use crate::server::{ServerHandle, RegistryEntry};
 
-/// Install the ring CryptoProvider exactly once per process.
-/// Calling this multiple times is safe (subsequent calls are no-ops).
+/// Ensure the ring CryptoProvider is ready.
+/// In rustls 0.22, ring is the default provider — no explicit installation needed.
 fn ensure_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // rustls 0.22 uses ring by default; nothing to install.
 }
 
 
@@ -226,9 +226,10 @@ async fn dispatch_tls(writer: Arc<tokio::sync::Mutex<TlsWriteHalf>>, msg: crate:
     let func_name = match &msg.func {
         Some(f) => f.clone(),
         None => {
-            let payload = crate::codec::pack_error(msg.id, "TypeError", "missing func field").unwrap();
-            let mut w = writer.lock().await;
-            let _ = crate::framing::write_frame(&mut *w, &payload).await;
+            if let Ok(payload) = crate::codec::pack_error(msg.id, "TypeError", "missing func field") {
+                let mut w = writer.lock().await;
+                let _ = crate::framing::write_frame(&mut *w, &payload).await;
+            }
             return;
         }
     };
@@ -239,13 +240,14 @@ async fn dispatch_tls(writer: Arc<tokio::sync::Mutex<TlsWriteHalf>>, msg: crate:
     };
 
     let Some(entry) = entry else {
-        let payload = crate::codec::pack_error(
+        if let Ok(payload) = crate::codec::pack_error(
             msg.id,
             "NotFoundError",
             &format!("function '{}' not exported", func_name),
-        ).unwrap();
-        let mut w = writer.lock().await;
-        let _ = crate::framing::write_frame(&mut *w, &payload).await;
+        ) {
+            let mut w = writer.lock().await;
+            let _ = crate::framing::write_frame(&mut *w, &payload).await;
+        }
         return;
     };
 
