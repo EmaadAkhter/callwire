@@ -1,0 +1,18 @@
+@PACKAGE_INIT@
+
+set(CALLWIRE_CORE_INCLUDE_DIRS @CALLWIRE_CORE_INCLUDE_DIRS@)
+set(CALLWIRE_CORE_LIBRARY_DIRS @CALLWIRE_CORE_LIBRARY_DIRS@)
+
+find_library(CALLWIRE_CORE_LIBRARY callwire_core PATHS @CALLWIRE_CORE_LIBRARY_DIRS@)
+
+if(CALLWIRE_CORE_LIBRARY)
+    add_library(CallwireCore::CallwireCore UNKNOWN IMPORTED)
+    set_target_properties(CallwireCore::CallwireCore PROPERTIES
+        IMPORTED_LOCATION "${CALLWIRE_CORE_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CALLWIRE_CORE_INCLUDE_DIRS}"
+    )
+else()
+    message(FATAL_ERROR "CallwireCore library not found")
+endif()
+
+check_package_version_exact(1 0 0)
