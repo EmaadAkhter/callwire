@@ -11,6 +11,11 @@ import java.util.concurrent.*;
  */
 public class Server {
 
+    private static class StreamMarker {
+        final Iterator<Object> iter;
+        StreamMarker(Iterator<Object> iter) { this.iter = iter; }
+    }
+
     private final Map<String, Handler> registry = new ConcurrentHashMap<>();
     private ServerSocket serverSocket;
     private volatile boolean running = false;
@@ -20,8 +25,16 @@ public class Server {
         Object handle(List<Object> args) throws Exception;
     }
 
+    public interface StreamHandler {
+        Iterator<Object> handle(List<Object> args) throws Exception;
+    }
+
     public void export(String funcName, Handler handler) {
         registry.put(funcName, handler);
+    }
+
+    public void exportStream(String funcName, StreamHandler handler) {
+        registry.put(funcName, (Handler) args -> new StreamMarker(handler.handle(args)));
     }
 
     public void serve(String host, int port) throws IOException {
@@ -85,8 +98,22 @@ public class Server {
 
         try {
             Object result = handler.handle(args);
-            byte[] response = Codec.encodeResponse(id, result);
-            Framing.writeFrame(conn, response);
+
+            // Check if result is a stream (wrapped in StreamMarker)
+            if (result instanceof StreamMarker) {
+                Iterator<Object> iter = ((StreamMarker) result).iter;
+                while (iter.hasNext()) {
+                    Object chunk = iter.next();
+                    byte[] payload = Codec.encodeStreamChunk(id, chunk);
+                    Framing.writeFrame(conn, payload);
+                }
+                byte[] end = Codec.encodeStreamEnd(id);
+                Framing.writeFrame(conn, end);
+            } else {
+                // Unary response
+                byte[] response = Codec.encodeResponse(id, result);
+                Framing.writeFrame(conn, response);
+            }
         } catch (Exception e) {
             String errorType = "Error";
             String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
