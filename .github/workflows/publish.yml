@@ -1,0 +1,56 @@
+name: Publish
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - VERSION
+      - ts/package.json
+      - rust/Cargo.toml
+      - python/pyproject.toml
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    if: github.repository == 'emaad/callwire'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci
+        working-directory: ts
+      - run: npm publish --access public
+        working-directory: ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-cratesio:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    if: github.repository == 'emaad/callwire'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish
+        working-directory: rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    if: github.repository == 'emaad/callwire'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install hatchling build twine
+          rm -rf dist/
+          python -m build
+          python -m twine upload dist/* --username __token__ --password ${{ secrets.PYPI_TOKEN }}
+        working-directory: python
