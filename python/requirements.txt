@@ -2,7 +2,7 @@ anyio==4.14.1
 build==1.5.0
 callwire==2.0.0
 certifi==2026.6.17
-charset-normalizer==3.4.8
+charset-normalizer==3.4.9
 click==8.4.2
 filelock==3.29.7
 h11==0.16.0
