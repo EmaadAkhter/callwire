@@ -94,7 +94,8 @@ describe('Callwire TypeScript: Multi-language Interoperability', () => {
     await tsServer.close();
   });
 
-  test('Python client → TypeScript server', 15_000, async () => {
+  test('Python client → TypeScript server', async () => {
+    jest.setTimeout(15_000);
     if (!fs.existsSync(path.join(REPO_ROOT, 'python/callwire'))) {
       console.warn('Skipping: Python SDK not found');
       return;
@@ -136,7 +137,8 @@ c.close()
     expect(output).toContain('STREAM:1,2,3,4,5');
   });
 
-  test('Rust client → TypeScript server', 30_000, async () => {
+  test('Rust client → TypeScript server', async () => {
+    jest.setTimeout(30_000);
     if (!fs.existsSync(path.join(REPO_ROOT, 'rust/Cargo.toml'))) {
       console.warn('Skipping: Rust SDK not found');
       return;
@@ -172,7 +174,8 @@ c.close()
     expect(output).toContain('STREAM:1,2,3,4,5');
   });
 
-  test('TypeScript client → Python server', 15_000, async () => {
+  test('TypeScript client → Python server', async () => {
+    jest.setTimeout(15_000);
     if (!fs.existsSync(path.join(REPO_ROOT, 'python/callwire'))) {
       console.warn('Skipping: Python SDK not found');
       return;
@@ -217,7 +220,8 @@ serve("localhost", ${pyPort})
     }
   });
 
-  test('TypeScript client → Rust server', 30_000, async () => {
+  test('TypeScript client → Rust server', async () => {
+    jest.setTimeout(30_000);
     if (!fs.existsSync(path.join(REPO_ROOT, 'rust/Cargo.toml'))) {
       console.warn('Skipping: Rust SDK not found');
       return;
