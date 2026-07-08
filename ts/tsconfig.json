@@ -10,8 +10,9 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node", "jest"],
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+    "types": ["jest"],
 }
