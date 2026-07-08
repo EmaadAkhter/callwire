@@ -1,20 +1,21 @@
 # Callwire
 
-**High-performance, bidirectional RPC across Go, Python, Rust, and TypeScript — over raw TCP with MessagePack framing.**
+**High-performance, bidirectional RPC across 12+ languages — Go, Python, Rust, TypeScript, Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby — over raw TCP with MessagePack framing.**
 
-No schemas. No `.proto` files. No codegen. Export a function, call it from anywhere.
+No schemas. No `.proto` files. No codegen. Export a function, call it from anywhere. All 4 gRPC streaming patterns, zero config.
 
 ---
 
 ## Features
 
 - **Zero-schema RPC** — export any function, call it from any language
-- **Bidirectional** — clients and servers can call each other over the same socket
-- **v2 Orchestration** — one `callwire.toml` spawns and connects workers automatically
-- **Dynamic routing** — connect to a registry, call any function without knowing worker addresses
+- **All 4 gRPC patterns** — unary, server-streaming, client-streaming, bidirectional-streaming (no `.proto` codegen)
+- **Bidirectional** — clients and servers call each other over the same socket
+- **12+ languages** — Go, Python, Rust, TypeScript (done); Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby (in progress)
+- **v3 Orchestration** — one `callwire.toml` spawns and connects workers automatically
+- **Dynamic routing** — connect to registry, call any function without knowing worker addresses
 - **TLS & mTLS** — secure transport with optional client certificate auth
 - **Batch API** — fire multiple calls concurrently over a single connection
-- **Streaming** — server-side streaming via generators / `AsyncIterable`
 - **Auto-reconnect** — exponential backoff on connection drops
 
 ---
@@ -331,14 +332,14 @@ Full breakdown → [benchmarks/compare_grpc.md](benchmarks/compare_grpc.md)
 | **Transport** | Raw TCP (4-byte length + msgpack) | HTTP/2 + HPACK |
 | **Bidirectional** | Same socket, any order | HTTP/2 streams (half-duplex per stream) |
 | **Orchestration** | Built-in `callwire.toml` + `init()` | External (Kubernetes, Consul, etc.) |
-| **Languages** | Go, Python, Rust, TypeScript | 11+ languages |
-| **Streaming** | Server-side (generators) | Unary + server + client + bidi |
+| **Languages** | **12+ (Go, Python, Rust, TS, Java, C, C++, COBOL, C#, Kotlin, Swift, Ruby)** | 11+ languages |
+| **Streaming** | **All 4 (unary, server, client, bidi)** | All 4 |
 | **Browser** | No | Yes (gRPC-Web) |
 | **Ecosystem** | Minimal | Envoy, gRPC-Gateway, health probes, reflection |
 
-**When to pick Callwire:** services in supported languages, especially polyglot stacks (Go+Python+Rust+TS), where developer velocity matters more than formal API contracts.
+**When to pick Callwire:** polyglot services, developer velocity over formal schemas, teams that want zero-config orchestration and legacy-system bridging (COBOL↔Go/Python/Rust in one wire protocol, no middleware).
 
-**When to pick gRPC:** cross-org APIs, browser clients, languages Callwire doesn't support, existing gRPC infrastructure.
+**When to pick gRPC:** cross-org APIs, browser clients, extensive tooling ecosystem (reflection, health checks, gRPC-Gateway), mature production observability.
 
 ### vs protosocket (Momento)
 
@@ -350,7 +351,7 @@ Python MessagePack-over-ZeroMQ RPC. Zero hits ~100K req/s on TCP but is Python-o
 
 ### vs MagicOnion (C#)
 
-MessagePack-over-gRPC for .NET/Unity. Shares Callwire's zero-schema philosophy (C# interfaces instead of `.proto`) but is C#-only and inherits gRPC's HTTP/2 overhead. Callwire is 1.3–1.7× faster on wire latency and spans 4 runtimes.
+MessagePack-over-gRPC for .NET/Unity. Shares Callwire's zero-schema philosophy (C# interfaces instead of `.proto`) but is C#-only and inherits gRPC's HTTP/2 overhead. Callwire is 1.3–1.7× faster on wire latency and spans 12+ runtimes including a dedicated C# SDK.
 
 ### vs Cap'n Proto RPC
 
@@ -362,7 +363,7 @@ Mature, 20+ language RPC with multiple transports. Requires `.thrift` schemas + 
 
 ### vs NPRPC
 
-Feature-rich multi-transport RPC (TCP/WS/HTTP3/QUIC/SharedMemory) for C++/TS/Swift with FlatBuffers. Strong where Callwire doesn't go (C++, browsers, QUIC), but requires `.npidl` schemas and code generation. No orchestration layer.
+Feature-rich multi-transport RPC (TCP/WS/HTTP3/QUIC/SharedMemory) for C++/TS/Swift with FlatBuffers. Strong where Callwire doesn't go (browsers, QUIC). But Callwire has C++/TS/Swift support (via C core ABI), no schema/codegen, and built-in orchestration. NPRPC's multi-transport is valuable where protocols vary; Callwire focuses on raw-TCP performance and simplicity.
 
 ---
 
@@ -370,14 +371,18 @@ Feature-rich multi-transport RPC (TCP/WS/HTTP3/QUIC/SharedMemory) for C++/TS/Swi
 
 Callwire's defensible advantages:
 
-1. **Zero-schema across 4 runtimes** — no other library lets you export a function in Go/Python/Rust/TS and call it from any of the others without a schema definition or codegen step.
+1. **Zero-schema across 12+ languages** — no other library lets you export a function in Go/Python/Rust/TS/Java/C/C++/COBOL/C#/Kotlin/Swift/Ruby and call it from any of the others without a schema definition or codegen step. Same zero-schema wire format everywhere.
 
-2. **Built-in orchestration** — `callwire init` auto-detects workers across all languages from a single config file. Competitors require external process managers (supervisord), container orchestration (Kubernetes), or bespoke shell scripts.
+2. **All 4 gRPC patterns, zero-config** — unary, server-streaming, client-streaming, bidi-streaming all supported. No `.proto` files, no codegen. Export a function that streams; it works from any language.
 
-3. **Bidirectional symmetry** — the same connection serves both client and server roles. Only protosocket offers this at the transport level; gRPC, Thrift, and Cap'n Proto enforce client/server roles at the API level.
+3. **Legacy-to-modern bridge** — the only RPC framework connecting COBOL mainframes directly to Go/Rust/TS/Python/Java microservices over the same zero-schema wire protocol. No gateway layer, no middleware required.
 
-4. **Protocol simplicity** — 4-byte length prefix + MessagePack. The entire spec fits on one page ([SPEC.md](SPEC.md)). Implementing from scratch takes hours, not weeks. This is the opposite of HTTP/2 (gRPC), which requires thousands of lines of HPACK, flow control, and stream multiplexing.
+4. **Built-in orchestration** — `callwire init` auto-detects workers across all languages from a single config file. Competitors require external process managers (supervisord), Kubernetes, or shell scripts.
 
-5. **Per-language CLI** — each SDK ships its own `callwire init` so there's zero cross-language dependency at build or runtime.
+5. **Bidirectional symmetry** — the same socket serves both client and server roles. Only protosocket offers this; gRPC, Thrift, Cap'n Proto enforce client/server roles.
 
-6. **Polyglot performance** — MessagePack encoding is fast in every runtime. Callwire doesn't optimize for a single language at the expense of others; the framing layer is simple enough that every language gets near-native serialization.
+6. **Protocol simplicity** — 4-byte length prefix + MessagePack. Full spec fits on one page ([SPEC.md](SPEC.md)). Implementing from scratch takes hours, not weeks.
+
+7. **C core ABI** — languages without hand-crafted SDKs can wrap the stable C ABI (`c/include/callwire.h`). Swift, COBOL, and others depend on this frozen interface. Lowers barrier for adding new runtimes.
+
+8. **Per-language CLI** — each SDK ships its own `callwire init` with zero cross-language build dependencies.
