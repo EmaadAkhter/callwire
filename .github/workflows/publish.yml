@@ -13,7 +13,7 @@ jobs:
   publish-npm:
     name: Publish to npm
     runs-on: ubuntu-latest
-    if: github.repository == 'emaad/callwire'
+    if: github.repository == 'EmaadAkhter/callwire'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,7 +30,7 @@ jobs:
   publish-cratesio:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    if: github.repository == 'emaad/callwire'
+    if: github.repository == 'EmaadAkhter/callwire'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,7 +42,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    if: github.repository == 'emaad/callwire'
+    if: github.repository == 'EmaadAkhter/callwire'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
