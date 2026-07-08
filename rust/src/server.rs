@@ -508,6 +508,11 @@ async fn handle_connection(socket: TcpStream, mut shutdown_rx: tokio::sync::watc
             }
         }
     }
+
+    // Connection is closing: drop all pending stream_inputs senders so that any
+    // in-progress dispatch_client_stream/dispatch_bidi task blocked on
+    // input_rx.recv() gets None and unblocks instead of hanging forever.
+    stream_inputs.lock().unwrap().clear();
 }
 
 async fn dispatch(writer: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>, msg: WireMessage) {
