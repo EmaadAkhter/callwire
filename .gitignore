@@ -114,3 +114,14 @@ c/build/
 swift/.build/
 examples/matrix/rust/target/
 examples/matrix/swift/.build/
+examples/matrix/c/export_c
+examples/matrix/c/import_c
+examples/matrix/cpp/export_cpp
+examples/matrix/cpp/import_cpp
+examples/matrix/swift/export_swift
+examples/matrix/swift/import_swift
+examples/matrix/cobol/export_cobol
+examples/matrix/cobol/import_cobol
+examples/matrix/go/export_go
+examples/matrix/go/import_go
+examples/matrix/java/*.class

@@ -233,6 +233,16 @@ def _init_as_orchestrator():
             shell=True,
             env=env_base,
             # Inherit parent's stdout/stderr so logs are visible
+            # start_new_session=True puts the shell AND everything it execs
+            # (e.g. "cd x && ./worker") in its own process group. Without
+            # this, shutdown()'s proc.terminate() only signals the shell
+            # wrapper — the actual worker binary underneath is a separate
+            # process that never receives SIGTERM, keeps running, and (since
+            # it inherited the parent's stdout/stderr) keeps those pipes
+            # open — which hangs anything reading the orchestrator's output
+            # (e.g. `python3 script.py | grep ...`) even after the
+            # orchestrator process itself has exited.
+            start_new_session=True,
         )
         _spawned.append(proc)
         print(f"[callwire] Spawned '{service_name}' (PID {proc.pid}): {cmd}", flush=True)
@@ -330,13 +340,19 @@ def shutdown():
     _shutdown_event.set()
     for proc in list(_spawned):
         try:
-            proc.terminate()
+            # Signal the whole process group (shell wrapper + whatever it
+            # exec'd), not just the shell — see the start_new_session
+            # comment in _init_as_orchestrator for why this matters.
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=3)
         except Exception:
             try:
-                proc.kill()
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
     _spawned.clear()
     try:
         Path(".callwire/pids").unlink(missing_ok=True)
