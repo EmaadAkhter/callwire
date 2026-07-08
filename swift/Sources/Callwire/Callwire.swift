@@ -14,6 +14,60 @@ public enum Value: Sendable, Equatable {
     case map([String: Value])
 }
 
+// Literal conformances so call sites can write plain `10`/`"World"` instead
+// of `.int64(10)`/`.string("World")` — powers the dynamic call sugar below
+// (`client.add(10, 20)`), where argument literals convert to Value implicitly.
+extension Value: ExpressibleByIntegerLiteral {
+    public init(integerLiteral value: Int64) { self = .int64(value) }
+}
+extension Value: ExpressibleByStringLiteral {
+    public init(stringLiteral value: String) { self = .string(value) }
+}
+extension Value: ExpressibleByFloatLiteral {
+    public init(floatLiteral value: Double) { self = .float64(value) }
+}
+extension Value: ExpressibleByBooleanLiteral {
+    public init(booleanLiteral value: Bool) { self = .bool(value) }
+}
+
+/// Types that can appear as a typed RPC argument or return value — powers
+/// the typed `export`/dynamic-call overloads (`(Int64, Int64) -> Int64`
+/// instead of `([Value]) throws -> Value` with manual `.int64(let a)`
+/// pattern-matching).
+public protocol ValueConvertible {
+    init(fromValue value: Value) throws
+    func toValue() -> Value
+}
+
+extension Int64: ValueConvertible {
+    public init(fromValue value: Value) throws {
+        guard case .int64(let v) = value else { throw CallwireError(message: "expected int64 argument") }
+        self = v
+    }
+    public func toValue() -> Value { .int64(self) }
+}
+extension Double: ValueConvertible {
+    public init(fromValue value: Value) throws {
+        guard case .float64(let v) = value else { throw CallwireError(message: "expected float64 argument") }
+        self = v
+    }
+    public func toValue() -> Value { .float64(self) }
+}
+extension Bool: ValueConvertible {
+    public init(fromValue value: Value) throws {
+        guard case .bool(let v) = value else { throw CallwireError(message: "expected bool argument") }
+        self = v
+    }
+    public func toValue() -> Value { .bool(self) }
+}
+extension String: ValueConvertible {
+    public init(fromValue value: Value) throws {
+        guard case .string(let v) = value else { throw CallwireError(message: "expected string argument") }
+        self = v
+    }
+    public func toValue() -> Value { .string(self) }
+}
+
 public struct CallwireError: Error, CustomStringConvertible {
     public let message: String
     public init(message: String) { self.message = message }
@@ -132,6 +186,14 @@ func lastError() -> String {
 /// Callwire client. One RPC in flight per connection at a time — matches the
 /// C core's client.c documented simplification (no reader thread/pending map
 /// yet); open multiple Client instances for concurrent calls.
+///
+/// `@dynamicMemberLookup` powers `try client.add(10, 20)` — no explicit
+/// `.call("add", args: [.int64(10), .int64(20)])`. Trade-off: the function
+/// name loses compile-time checking (a typo becomes a runtime NotFoundError
+/// instead of a compile error), same trade this codebase already makes with
+/// Python's dynamic import and TypeScript's `remote` Proxy. The explicit
+/// `call(_:args:)` below remains available as the type-checked fallback.
+@dynamicMemberLookup
 public final class Client: @unchecked Sendable {
     private var handle: OpaquePointer?
 
@@ -150,6 +212,23 @@ public final class Client: @unchecked Sendable {
         if let h = handle {
             callwire_client_close(h)
             handle = nil
+        }
+    }
+
+    /// Dynamic call proxy: `client.add(10, 20)` — `add` is resolved via
+    /// dynamicMemberLookup to a `DynamicCall`, then `callAsFunction` makes
+    /// the parenthesized call site work.
+    public subscript(dynamicMember name: String) -> DynamicCall {
+        DynamicCall(client: self, function: name)
+    }
+
+    public struct DynamicCall {
+        let client: Client
+        let function: String
+
+        @discardableResult
+        public func callAsFunction(_ args: Value...) throws -> Value {
+            try client.call(function, args: args)
         }
     }
 
@@ -334,6 +413,51 @@ public final class Server: @unchecked Sendable {
             }
         }
         guard rc == 0 else { throw CallwireError(message: "export failed: \(lastError())") }
+    }
+
+    /// Typed 1-arg export — no `.int64(let a)` pattern-matching or `.int64(...)`
+    /// result wrapping. `try server.exportTyped("negate") { (a: Int64) in -a }`
+    ///
+    /// Named `exportTyped` rather than overloading `export` — Swift's overload
+    /// resolution for trailing closures doesn't reliably backtrack from the
+    /// concrete `export(_:handler: Handler)` overload to these generic ones
+    /// even when the closure's parameter list doesn't match `Handler`'s
+    /// `([Value]) throws -> Value` shape (observed: it reports a type error
+    /// against the wrong overload instead of falling through). A distinct
+    /// name sidesteps the ambiguity entirely.
+    public func exportTyped<A: ValueConvertible, R: ValueConvertible>(
+        _ name: String, handler: @escaping (A) throws -> R
+    ) throws {
+        try export(name) { values in
+            guard values.count == 1 else { throw CallwireError(message: "expected 1 argument, got \(values.count)") }
+            let a = try A(fromValue: values[0])
+            return try handler(a).toValue()
+        }
+    }
+
+    /// Typed 2-arg export. `try server.exportTyped("add") { (a: Int64, b: Int64) in a + b }`
+    public func exportTyped<A: ValueConvertible, B: ValueConvertible, R: ValueConvertible>(
+        _ name: String, handler: @escaping (A, B) throws -> R
+    ) throws {
+        try export(name) { values in
+            guard values.count == 2 else { throw CallwireError(message: "expected 2 arguments, got \(values.count)") }
+            let a = try A(fromValue: values[0])
+            let b = try B(fromValue: values[1])
+            return try handler(a, b).toValue()
+        }
+    }
+
+    /// Typed 3-arg export.
+    public func exportTyped<A: ValueConvertible, B: ValueConvertible, C: ValueConvertible, R: ValueConvertible>(
+        _ name: String, handler: @escaping (A, B, C) throws -> R
+    ) throws {
+        try export(name) { values in
+            guard values.count == 3 else { throw CallwireError(message: "expected 3 arguments, got \(values.count)") }
+            let a = try A(fromValue: values[0])
+            let b = try B(fromValue: values[1])
+            let c = try C(fromValue: values[2])
+            return try handler(a, b, c).toValue()
+        }
     }
 
     /// Blocks until the server is closed or an error occurs.

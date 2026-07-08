@@ -39,6 +39,10 @@ try! server.export("counter") { _ in
     return .int64(counter)
 }
 
+// Typed export overloads — no .int64(let a) pattern-matching, no .int64(...) wrapping.
+try! server.exportTyped("addTyped") { (a: Int64, b: Int64) in a + b }
+try! server.exportTyped("greetTyped") { (name: String) in "Hello, \(name)!" }
+
 DispatchQueue.global().async {
     try? server.serve()
 }
@@ -53,6 +57,15 @@ print("test_unary_add: OK")
 let greetResult = try! client.call("greet", args: [.string("World")])
 assertEqual(greetResult, .string("Hello, World!"), "greet(World)")
 print("test_unary_greet: OK")
+
+// Dynamic call sugar: client.addTyped(10, 20) — no .call("addTyped", args: [...]).
+let dynamicSum = try! client.addTyped(10, 20)
+assertEqual(dynamicSum, .int64(30), "dynamic addTyped(10,20)")
+print("test_dynamic_call_add: OK (\(dynamicSum))")
+
+let dynamicGreeting = try! client.greetTyped("World")
+assertEqual(dynamicGreeting, .string("Hello, World!"), "dynamic greetTyped(World)")
+print("test_dynamic_call_greet: OK (\(dynamicGreeting))")
 
 let c1 = try! client.call("counter")
 let c2 = try! client.call("counter")

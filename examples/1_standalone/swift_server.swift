@@ -21,19 +21,8 @@ import Darwin
 
 let server = try! Server(host: "0.0.0.0", port: 9090)
 
-try! server.export("add") { args in
-    guard case .int64(let a) = args[0], case .int64(let b) = args[1] else {
-        throw CallwireError(message: "expected two int64 args")
-    }
-    return .int64(a + b)
-}
-
-try! server.export("greet") { args in
-    guard case .string(let name) = args[0] else {
-        throw CallwireError(message: "expected a string arg")
-    }
-    return .string("Hello, \(name)!")
-}
+try! server.exportTyped("add") { (a: Int64, b: Int64) in a + b }
+try! server.exportTyped("greet") { (name: String) in "Hello, \(name)!" }
 
 print("Callwire Swift server listening on :9090")
 try! server.serve()
