@@ -160,20 +160,28 @@ export class Server {
             // Set up input queue for this call
             const queue: unknown[] = [];
             let waiting: (() => void) | null = null;
+            let ended = false;
+            let erroredWith: Error | null = null;
             const inputIter: AsyncIterable<unknown> = {
               [Symbol.asyncIterator]: () => ({
                 next: async () => {
-                  while (queue.length === 0) {
+                  while (queue.length === 0 && !ended && !erroredWith) {
                     await new Promise<void>(resolve => { waiting = resolve; });
                   }
-                  return { value: queue.shift(), done: false };
+                  if (queue.length > 0) {
+                    return { value: queue.shift(), done: false };
+                  }
+                  if (erroredWith) {
+                    throw erroredWith;
+                  }
+                  return { value: undefined, done: true };
                 }
               })
             };
             const input = {
               push: (v: unknown) => { queue.push(v); waiting?.(); waiting = null; },
-              end: () => { waiting?.(); waiting = null; },
-              error: (e: Error) => { waiting?.(); waiting = null; }
+              end: () => { ended = true; waiting?.(); waiting = null; },
+              error: (e: Error) => { erroredWith = e; waiting?.(); waiting = null; }
             };
             streamInputs.set(id, input);
             this._runHandler(socket, id, handlerEntry, args, inputIter);
@@ -184,6 +192,14 @@ export class Server {
         }
       } catch {
         socket.destroy();
+      } finally {
+        // Unblock any handler awaiting more input from a client-stream/bidi
+        // call that never sent stream_close/stream_end before disconnecting.
+        const disconnectErr = new Error('Connection closed');
+        for (const input of streamInputs.values()) {
+          input.error(disconnectErr);
+        }
+        streamInputs.clear();
       }
     };
 

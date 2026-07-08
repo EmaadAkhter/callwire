@@ -1,4 +1,5 @@
 import atexit
+import collections.abc
 import inspect
 import os
 import queue
@@ -6,6 +7,7 @@ import socket
 import ssl
 import threading
 import time
+import typing
 
 from .framing import read_frame, write_frame
 from .codec import pack_response, pack_error, pack_stream_chunk, pack_stream_end, pack_stream_close, unpack
@@ -183,12 +185,30 @@ def _expects_stream_input(fn):
     params = list(sig.parameters.values())
     if not params:
         return False
-    # First param has a type hint that looks like a stream/iterable
+    # First param's type hint must be exactly typing.Iterator/Iterable/AsyncIterator
+    # (or their collections.abc equivalents), not merely contain that name as a
+    # substring — e.g. a param hinted `MyIteratorWrapper` must NOT match.
     first_param = params[0]
     if first_param.annotation == inspect.Parameter.empty:
         return False
-    ann_str = str(first_param.annotation)
-    return "Iterator" in ann_str or "Iterable" in ann_str or "AsyncIterator" in ann_str
+    origin = typing.get_origin(first_param.annotation)
+    if origin is not None:
+        return origin in (
+            collections.abc.Iterator,
+            collections.abc.Iterable,
+            collections.abc.AsyncIterator,
+            collections.abc.AsyncIterable,
+        )
+    return first_param.annotation in (
+        typing.Iterator,
+        typing.Iterable,
+        typing.AsyncIterator,
+        typing.AsyncIterable,
+        collections.abc.Iterator,
+        collections.abc.Iterable,
+        collections.abc.AsyncIterator,
+        collections.abc.AsyncIterable,
+    )
 
 
 def _dispatch_streaming(conn, msg, q: queue.Queue, streams, is_bidi):
