@@ -112,3 +112,5 @@ desktop.ini
 *.orig
 c/build/
 swift/.build/
+examples/matrix/rust/target/
+examples/matrix/swift/.build/

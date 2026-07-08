@@ -1,0 +1,16 @@
+[package]
+name = "callwire-matrix"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "export_rust"
+path = "src/bin_export_rust.rs"
+
+[[bin]]
+name = "import_rust"
+path = "src/bin_import_rust.rs"
+
+[dependencies]
+callwire = { path = "../../../rust" }
+tokio = { version = "1", features = ["full"] }
