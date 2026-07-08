@@ -8,6 +8,8 @@
   },
   "types": "dist/index.d.ts",
   "scripts": {
+    "pretest": "python3 -m pip install --break-system-packages -e ../python",
+
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "test:watch": "jest --watch",
@@ -35,7 +37,7 @@
   },
   "jest": {
     "preset": "ts-jest",
-    "testEnvironment": "node",
+    "testTimeout": 60000,
     "testMatch": [
       "**/tests/**/*.test.ts"
     ]
