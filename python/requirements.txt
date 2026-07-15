@@ -6,7 +6,7 @@ charset-normalizer==3.4.9
 click==8.4.2
 filelock==3.29.7
 h11==0.16.0
-httpcore2==2.5.0
+httpcore2==2.7.0
 httpx2==2.5.0
 hyperlink==21.0.0
 id==1.6.1
