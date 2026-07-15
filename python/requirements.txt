@@ -31,7 +31,7 @@ ptyprocess==0.7.0
 Pygments==2.20.0
 pyproject-hooks==1.2.0
 pytest==9.1.1
-python-discovery==1.4.3
+python-discovery==1.4.4
 readme-renderer==45.0
 requests==2.34.2
 requests-toolbelt==1.0.0
