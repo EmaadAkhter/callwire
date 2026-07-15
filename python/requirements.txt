@@ -1,5 +1,5 @@
 anyio==4.14.1
-build==1.5.0
+build==1.5.1
 callwire==2.0.1
 certifi==2026.6.17
 charset-normalizer==3.4.9
