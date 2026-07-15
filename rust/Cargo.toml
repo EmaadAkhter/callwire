@@ -38,7 +38,7 @@ tokio = { version = "1.32", features = ["full"] }
 thiserror = "2.0"
 futures-util = "0.3"
 bytes = "1.5"
-tokio-rustls = "0.25"
+tokio-rustls = "0.26"
 rustls = "0.22"
 rustls-pemfile = "2"
 toml = "0.8.1"
