@@ -1,4 +1,4 @@
-anyio==4.14.1
+anyio==4.14.2
 build==1.5.0
 callwire==2.0.1
 certifi==2026.6.17
